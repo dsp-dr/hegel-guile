@@ -1,0 +1,115 @@
+#+TITLE: hegel-guile
+#+AUTHOR: dsp-dr
+#+DESCRIPTION: Hegel protocol client for GNU Guile 3
+
+* hegel-guile
+
+A [[https://www.gnu.org/software/guile/][GNU Guile 3]] client for the [[https://hegel.dev][Hegel]] universal property-based testing protocol.
+
+Hegel separates the testing engine ([[https://hypothesis.readthedocs.io/][Hypothesis]], running as =hegel-core=) from the language client. This library implements the thin CBOR wire protocol so you can write property-based tests in Guile while Hypothesis handles generation, shrinking, and search.
+
+** Requirements
+
+- GNU Guile 3.x (=guile3=)
+- Python 3.11+ with [[https://pypi.org/project/hegel-core/][hegel-core]] (for the test server)
+
+** Quick Start
+
+#+begin_src sh
+# Install hegel-core
+uv sync
+
+# Run unit tests (no server needed)
+gmake test
+
+# Run property tests against live server
+guile3 -L src examples/basic.scm
+#+end_src
+
+** Usage
+
+#+begin_src scheme
+(use-modules (hegel))
+
+(define-hegel-test (my-test tc #:test-cases 100)
+  (let ((x (tc-draw tc (integers #:min-value 0 #:max-value 1000)))
+        (y (tc-draw tc (integers #:min-value 0 #:max-value 1000))))
+    (unless (= (+ x y) (+ y x))
+      (error "addition not commutative" x y))))
+
+(run-hegel-tests!)
+#+end_src
+
+** Generators
+
+| Function    | Schema Type | Options                                       |
+|-------------+-------------+-----------------------------------------------|
+| =integers=  | integers    | =#:min-value=, =#:max-value=                  |
+| =booleans=  | booleans    | —                                             |
+| =floats=    | floats      | =#:min-value=, =#:max-value=, =#:allow-nan=, =#:allow-infinity= |
+| =text=      | text        | =#:min-size=, =#:max-size=                    |
+| =binary=    | binary      | =#:min-size=, =#:max-size=                    |
+| =lists-of=  | lists       | =#:min-size=, =#:max-size=                    |
+| =one-of=    | one_of      | variadic schemas                              |
+| =gen-filter= | (client-side) | predicate, uses =tc-assume= for rejection  |
+| =gen-map=   | (client-side) | transform function                           |
+
+** Architecture
+
+#+begin_example
+┌─────────────────────────────┐     ┌──────────────────────┐
+│       Guile Process         │     │   hegel-core (Python) │
+│                             │     │                      │
+│  test.scm (runner)          │     │  Hypothesis engine   │
+│    ↓                        │     │    ↕                 │
+│  generators.scm (schemas)   │     │  Protocol server     │
+│    ↓                        │     │                      │
+│  protocol.scm (messages)    │     └──────────┬───────────┘
+│    ↓                        │                │
+│  cbor.scm (codec)  ←───────╫── Unix socket ─┘
+│                             │   CBOR frames
+└─────────────────────────────┘
+#+end_example
+
+** Examples
+
+- =examples/basic.scm= — Port of hegel-rust quickstart (commutativity, round-trips, model testing)
+- =examples/sicp.scm= — SICP-inspired: interval arithmetic, symbolic differentiation, rational numbers
+- =examples/ledger.scm= — Double-entry bookkeeping invariants
+- =examples/lisp.scm= — Minimal Lisp evaluator (eval/apply core, inspired by LISP 1.5 p.13)
+- =examples/todo.scm= — Todo list CRUD model-based testing
+
+** Project Structure
+
+#+begin_example
+src/
+  hegel.scm              Top-level re-export module
+  hegel/
+    cbor.scm              CBOR encoder/decoder (RFC 8949 subset)
+    protocol.scm          Wire protocol message constructors
+    server.scm            Server lifecycle (spawn, connect, handshake)
+    test-case.scm         tc-draw / tc-assume primitives
+    generators.scm        Schema combinators
+    test.scm              define-hegel-test macro, test runner
+tests/
+    test-cbor.scm         CBOR codec round-trip tests
+    test-protocol.scm     Protocol message + conjecture validation
+    test-generators.scm   Generator schema + C-003 snake_case tests
+examples/
+    basic.scm             Quickstart examples
+#+end_example
+
+** Open Conjectures
+
+| ID    | Conjecture                              | Status    | Offline Tests |
+|-------+-----------------------------------------+-----------+---------------|
+| C-001 | Framing is length-prefixed uint32-BE    | Inferred  | 5 tests       |
+| C-002 | Handshake is client-initiated           | Inferred  | 7 tests       |
+| C-003 | Schema keys use snake_case              | Confirmed | 12 tests      |
+| C-004 | Status strings: passed/failed/invalid   | Inferred  | 9 tests       |
+
+Full validation of C-001 and C-002 requires capturing live wire traffic (e.g., =socat= between client and server).
+
+** License
+
+TBD
