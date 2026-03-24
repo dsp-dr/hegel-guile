@@ -1,0 +1,8 @@
+[project]
+name = "hegel-guile-server"
+version = "0.1.0"
+description = "Python dependencies for hegel-guile live server tests"
+requires-python = ">=3.11"
+dependencies = [
+    "hegel-core",
+]
