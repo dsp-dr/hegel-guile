@@ -67,11 +67,11 @@
    ((eq? val #f) (make-bytevector 1 #xf4))
    ;; Null / unspecified
    ((eq? val 'null) (make-bytevector 1 #xf6))
-   ;; Unsigned integer
-   ((and (integer? val) (>= val 0))
+   ;; Unsigned integer (exact only — inexact integers are floats on the wire)
+   ((and (number? val) (exact? val) (integer? val) (>= val 0))
     (encode-uint-bytes 0 val))
-   ;; Negative integer
-   ((integer? val)
+   ;; Negative integer (exact only)
+   ((and (number? val) (exact? val) (integer? val))
     (encode-uint-bytes 1 (- -1 val)))
    ;; Float (double)
    ((real? val)

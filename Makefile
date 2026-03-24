@@ -13,6 +13,8 @@ compile:
 
 test: compile
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-cbor.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
 
 tangle:
 	emacs --batch --eval \
