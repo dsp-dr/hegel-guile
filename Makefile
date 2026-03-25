@@ -1,20 +1,28 @@
 # Makefile for hegel-guile
 
-GUILD   ?= guild
+GUILD   ?= guild3
 GUILE   ?= guile3
 SRC_DIR := src
 TEST_DIR:= tests
 
 # Compile all modules
-.PHONY: compile test clean tangle
+.PHONY: compile test test-all repl clean tangle
 
 compile:
-	find $(SRC_DIR) -name '*.scm' | xargs -I{} $(GUILD) compile {}
+	@find $(SRC_DIR) -name '*.scm' | while read f; do \
+		$(GUILD) compile -L $(SRC_DIR) "$$f" || true; \
+	done
 
 test: compile
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-cbor.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
+	@for f in $(TEST_DIR)/test-*.scm; do \
+		echo "=== Running $$f ==="; \
+		$(GUILE) -L $(SRC_DIR) "$$f" || exit 1; \
+	done
+
+test-all: test
+
+repl:
+	$(GUILE) -L $(SRC_DIR)
 
 tangle:
 	emacs --batch --eval \

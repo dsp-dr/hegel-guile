@@ -1,6 +1,7 @@
 ;;; hegel/test-case.scm — TestCase record and draw/assume primitives
 
 (define-module (hegel test-case)
+  #:use-module (srfi srfi-9)
   #:use-module (hegel protocol)
   #:export (make-test-case
             tc-draw

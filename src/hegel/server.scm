@@ -1,6 +1,8 @@
 ;;; hegel/server.scm — Lifecycle: spawn hegel-core and connect
 
 (define-module (hegel server)
+  #:use-module (srfi srfi-9)
+  #:use-module (srfi srfi-11)
   #:use-module (hegel protocol)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
