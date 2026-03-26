@@ -1,0 +1,351 @@
+#+TITLE: Conjectures C10-C15: Implementation Gaps from Live Probe
+#+DATE: 2026-03-26
+#+STARTUP: overview
+
+* Overview
+
+Conjectures derived from the C9 live probe against hegel-core 0.2.3.
+Each maps to a bead (implementation ticket) and has a specific
+falsification test.
+
+* OPEN C10: Reply Payload Format is {result: value}
+  :PROPERTIES:
+  :BEAD: hegel-guile-11
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+All HEGL reply packets must carry a CBOR map payload with either
+~{"result": <value>}~ for success or ~{"error": <msg>, "type": <name>}~
+for errors. Bare CBOR values are rejected.
+
+** Evidence
+
+hegel-core ~channel.py~ line 38-41:
+#+begin_src python
+payload = cbor2.loads(packet.payload)
+if "error" in payload:
+    raise RequestError(payload["error"], error_type=payload["type"])
+return payload["result"]
+#+end_src
+
+Live probe: sending ~cbor-encode 'null~ as reply caused
+~TypeError: argument of type 'NoneType' is not iterable~ (server
+tried ~"error" in None~). Sending ~cbor-encode #t~ caused
+~TypeError: argument of type 'bool' is not iterable~.
+
+** Falsification Test
+
+#+begin_src scheme
+;; Send reply with {"result": null} — should succeed
+(let ((reply-payload (cbor-encode (list (cons "result" 'null)))))
+  (write-hegl-packet! port
+    (make-hegl-packet ch (logior mid %reply-bit) reply-payload)))
+;; Server must NOT crash. Verify by successfully reading the next packet.
+#+end_src
+
+** Implementation
+
+~channel.scm~: add ~channel-write-reply!~ and ~channel-write-reply-error!~:
+#+begin_src scheme
+(define (channel-write-reply! channel message-id value)
+  (write-hegl-packet! (hegel-channel-out-port channel)
+    (make-hegl-packet (hegel-channel-id channel)
+                      (logior message-id %reply-bit)
+                      (cbor-encode (list (cons "result" value))))))
+
+(define (channel-write-reply-error! channel message-id error-msg error-type)
+  (write-hegl-packet! (hegel-channel-out-port channel)
+    (make-hegl-packet (hegel-channel-id channel)
+                      (logior message-id %reply-bit)
+                      (cbor-encode (list (cons "error" error-msg)
+                                         (cons "type" error-type))))))
+#+end_src
+
+Also update ~channel-recv-cbor!~ to unwrap ~{"result": v}~ on receive.
+
+* OPEN C11: Packet Multiplexer Required for Interleaved Traffic
+  :PROPERTIES:
+  :BEAD: hegel-guile-10
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+A single hegel-core connection multiplexes packets across channels.
+The server sends packets on channels 0, 1, 2, ... interleaved.
+A client that reads packets sequentially per-channel will deadlock
+or read the wrong channel's packets.
+
+** Evidence
+
+Live probe: after sending ~run_test~, the server's reply on channel 0
+and the ~test_case~ event on channel 1 arrived interleaved. Our
+~channel-recv-reply!~ on channel 0 read the channel 1 packet instead.
+
+Error: ~channel: expected reply packet~ with a packet on channel 1.
+
+** Falsification Test
+
+#+begin_src scheme
+;; Send run_test with test_cases=2. Read packets. Verify that:
+;; 1. At least one packet on channel 0 (run_test ack) arrives
+;; 2. At least one packet on channel 1 (test_case event) arrives
+;; 3. They may arrive in either order
+;; If the multiplexer works, channel-recv-reply! for channel 0
+;; returns the ack even if the channel 1 packet arrived first.
+#+end_src
+
+** Implementation
+
+New ~connection-mux~ record in ~channel.scm~ (or new ~mux.scm~):
+
+#+begin_src scheme
+(define-record-type <connection-mux>
+  (in-port out-port channel-buffers)
+  ...)
+
+(define (mux-read-for-channel! mux channel-id)
+  "Read packets until one for CHANNEL-ID arrives.
+   Buffer packets for other channels."
+  (let loop ()
+    (let ((buffered (hash-ref (mux-channel-buffers mux) channel-id '())))
+      (if (not (null? buffered))
+          ;; Return first buffered packet, remove from buffer
+          (let ((pkt (car buffered)))
+            (hash-set! (mux-channel-buffers mux) channel-id (cdr buffered))
+            pkt)
+          ;; Read next packet from port, dispatch
+          (let* ((pkt (read-hegl-packet! (mux-in-port mux)))
+                 (ch  (hegl-packet-channel-id pkt)))
+            (if (= ch channel-id)
+                pkt
+                (begin
+                  ;; Buffer for the other channel
+                  (hash-set! (mux-channel-buffers mux) ch
+                    (append (hash-ref (mux-channel-buffers mux) ch '())
+                            (list pkt)))
+                  (loop))))))))
+#+end_src
+
+All channels use the mux instead of reading from the port directly.
+
+* OPEN C12: run_test Requires channel_id at Top Level
+  :PROPERTIES:
+  :BEAD: hegel-guile-8
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+The ~run_test~ command must include ~channel_id~ (integer) at top
+level. The server calls ~connection.register_client_channel(message["channel_id"])~.
+Without it, ~KeyError: 'channel_id'~.
+
+** Evidence
+
+Live probe first attempt: sent ~{"command": "run_test", "settings": {"max_examples": 3}}~.
+Server crashed: ~KeyError: 'channel_id'~.
+
+Fixed probe: sent ~{"command": "run_test", "channel_id": 1, "test_cases": 3}~.
+Server accepted and replied with ~{"result": true}~.
+
+** Falsification Test
+
+#+begin_src scheme
+;; Send run_test WITHOUT channel_id — must fail
+;; Send run_test WITH channel_id — must succeed
+#+end_src
+
+** Implementation
+
+Update ~msg-run-test~ in ~protocol.scm~:
+#+begin_src scheme
+(define (msg-run-test channel-id test-cases . opts)
+  (let loop ((opts opts) (msg (list (cons "command" "run_test")
+                                     (cons "channel_id" channel-id)
+                                     (cons "test_cases" test-cases))))
+    (cond
+     ((null? opts) (reverse msg))
+     ((eq? (car opts) #:database)
+      (loop (cddr opts) (cons (cons "database" (cadr opts)) msg)))
+     ((eq? (car opts) #:seed)
+      (loop (cddr opts) (cons (cons "seed" (cadr opts)) msg)))
+     (else (error "msg-run-test: unknown keyword" (car opts))))))
+#+end_src
+
+* OPEN C13: Status Strings Are UPPERCASE Enum Names
+  :PROPERTIES:
+  :BEAD: hegel-guile-9
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+~mark_complete~ status values are uppercase Python ~Status~ enum
+names: ~"VALID"~, ~"INVALID"~, ~"INTERESTING"~. Lowercase strings
+will cause ~KeyError~ in ~Status[message["status"]]~.
+
+** Evidence
+
+hegel-core ~server.py~ line 202: ~status = Status[message["status"]]~.
+Python enum lookup is case-sensitive. The Status enum values are
+~VALID~, ~INVALID~, ~INTERESTING~ (all caps).
+
+The live probe used ~"VALID"~ and it worked. The previous test.scm
+used ~"passed"~, ~"failed"~, ~"invalid"~ (lowercase, wrong names).
+
+** Falsification Test
+
+#+begin_src scheme
+;; Send mark_complete with status "valid" (lowercase) — should fail
+;; Send mark_complete with status "VALID" (uppercase) — should succeed
+#+end_src
+
+** Implementation
+
+Update ~test.scm~ result mapping:
+#+begin_src scheme
+(case result
+  ((valid)       (msg-mark-complete "VALID"))
+  ((invalid)     (msg-mark-complete "INVALID"))
+  ((interesting) (msg-mark-complete "INTERESTING")))
+#+end_src
+
+* OPEN C14: Server Drives Test Case Lifecycle
+  :PROPERTIES:
+  :BEAD: hegel-guile-12
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+The server controls test case iteration. The flow is:
+
+1. Client sends ~run_test~ on control channel
+2. Server creates a test case channel (even ID) per Hypothesis iteration
+3. Server sends ~{event: "test_case", channel_id: N}~ as a REQUEST
+   to the client on the test channel
+4. Client REPLIES with ~{result: null}~ to acknowledge
+5. Client sends ~generate~ commands on the test_case channel (N)
+6. Client sends ~mark_complete~ on the test_case channel
+7. Repeat 2-6 until Hypothesis is done
+8. Server sends ~{event: "test_done", results: {...}}~ on test channel
+
+The client does NOT decide how many test cases to run. Hypothesis
+decides.
+
+** Evidence
+
+Live probe: after sending ~run_test~ with ~test_cases: 1~, the server
+sent ~{event: "test_case", channel_id: 2}~ on channel 1. This was
+a REQUEST packet (not reply), requiring the client to respond.
+
+hegel-core ~server.py~ line 161-174: ~test_function~ creates a new
+channel, sends the ~test_case~ event via ~send_request().get()~
+(blocking until client replies), then enters ~handle_requests~ loop
+waiting for generate/mark_complete.
+
+** Falsification Test
+
+#+begin_src scheme
+;; Run a test with test_cases=3. Count the number of test_case events
+;; received from the server. Should be >= 1 (Hypothesis may run fewer
+;; if it finds something interesting, or more during shrinking).
+;; The client must NOT send start_test_case — the server initiates.
+#+end_src
+
+** Implementation
+
+Rewrite ~run-single-test!~ in ~test.scm~:
+
+#+begin_src scheme
+(define (run-single-test! conn thunk test-cases)
+  (let* ((control (hegel-connection-control-channel conn))
+         (mux     (hegel-connection-mux conn))
+         (test-ch-id (make-client-channel-id ...))
+         ;; run_test on control
+         (run-resp (channel-send-request! control
+                     (msg-run-test test-ch-id test-cases))))
+    ;; Server-driven loop: read events on test channel
+    (let loop ()
+      (let ((pkt (mux-read-for-channel! mux test-ch-id)))
+        (let ((msg (cbor-decode (hegl-packet-payload pkt))))
+          (cond
+           ;; test_case event — run the test function
+           ((equal? (response-event msg) "test_case")
+            (let ((tc-ch-id (response-field msg "channel_id")))
+              ;; Ack the event
+              (channel-write-reply! ...)
+              ;; Run thunk, send generate/mark_complete on tc-ch-id
+              (run-test-case! mux tc-ch-id thunk)
+              (loop)))
+           ;; test_done — return results
+           ((equal? (response-event msg) "test_done")
+            (channel-write-reply! ...)
+            (response-field msg "results"))))))))
+#+end_src
+
+* OPEN C15: Schema Type Vocabulary
+  :PROPERTIES:
+  :BEAD: hegel-guile-13
+  :STATUS: OPEN
+  :END:
+
+** Conjecture
+
+Schema type names in ~generators.scm~ do not match hegel-core's
+~from_schema()~. The live probe returned "Unsupported schema:
+{'type': 'integers'}". The actual vocabulary is likely singular
+forms or different names entirely.
+
+** Falsification Test
+
+#+begin_src sh
+# Read the actual schema vocabulary from hegel-core
+python3 -c "
+from hegel.server import from_schema
+import inspect
+print(inspect.getsource(from_schema))
+"
+#+end_src
+
+#+begin_src scheme
+;; Send generate with {"type": "integer"} — should return an integer
+;; Send generate with {"type": "integers"} — should fail
+#+end_src
+
+** Implementation
+
+Depends on ~from_schema()~ source. Expected mapping:
+
+| generators.scm (current) | hegel-core (expected) |
+|--------------------------|-----------------------|
+| ~"integers"~ | TBD |
+| ~"booleans"~ | TBD |
+| ~"floats"~ | TBD |
+| ~"text"~ | TBD |
+| ~"binary"~ | TBD |
+| ~"lists"~ | TBD |
+| ~"one_of"~ | TBD |
+
+* Summary: Implementation Dependency Graph
+
+#+begin_example
+C10 (reply format)     ← standalone fix, no deps
+C11 (packet mux)       ← foundational, blocks C12 and C14
+C12 (run_test format)  ← needs C11 for testing
+C13 (uppercase status) ← standalone fix, no deps
+C14 (server-driven)    ← needs C11 (mux) + C10 (reply format) + C12 (run_test)
+C15 (schema vocab)     ← standalone investigation, then fix generators.scm
+#+end_example
+
+Build order:
+1. C10 + C13 + C15 (parallel, independent fixes)
+2. C11 (packet multiplexer — the big one)
+3. C12 (run_test format, testable with mux)
+4. C14 (server-driven test loop — the integration)
+
+Acceptance: ~guile -L src tools/stdio-probe.scm~ runs 3 test cases
+end-to-end against live hegel-core with 0 errors.
