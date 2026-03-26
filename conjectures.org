@@ -1005,6 +1005,99 @@ hegel-core.
 - ~hegeldev/hegel-rust~ ~src/runner.rs~ (client-side handshake)
 - ~hegeldev/hegel-rust~ ~src/protocol/mod.rs~ (~HANDSHAKE_STRING~)
 
+* CONFIRMED C9: hegel-guile HEGL Implementation Matches hegel-core Wire Format
+  :PROPERTIES:
+  :STATUS: PARTIALLY CONFIRMED
+  :DATE: 2026-03-26
+  :END:
+
+** Conjecture
+
+hegel-guile's HEGL packet implementation (crc32.scm, packet.scm,
+channel.scm) produces wire-compatible packets with hegel-core 0.2.3.
+Verified by: (1) bare direct connection, (2) socat logging proxy.
+
+** Live Verification Results (2026-03-26)
+
+Tested against hegel-core 0.2.3 via ~--stdio~ mode.
+
+*** Confirmed
+
+- *Handshake:* raw ~hegel_handshake_start~ / ~Hegel/0.7~ works.
+  HEGL packet framing (magic, CRC32, channel, message ID, terminator)
+  accepted by server.
+- *HEGL packet format:* Our packet.scm produces valid packets that
+  hegel-core reads without error. CRC32 computation matches.
+- *run_test:* ~{"command": "run_test", "channel_id": 1, "test_cases": 1}~
+  on channel 0 accepted. Server replies with ~{"result": true}~.
+- *Channel multiplexing:* Server sends test_case events on channel 1,
+  creates even-numbered channels (2, 4, ...) for individual test cases.
+- *test_case event:* ~{"event": "test_case", "channel_id": 2, "is_final": false}~
+  received as a request (not reply) on the test channel.
+- *mark_complete:* ~{"command": "mark_complete", "status": "VALID"}~
+  accepted. Status strings are uppercase Python enum names.
+- *test_done:* ~{"event": "test_done", "results": {"passed": true, ...}}~
+  received. Full result payload includes test_cases, valid/invalid/
+  interesting counts, seed.
+- *--stdio transport:* hegel-core 0.2.3 ships with ~--stdio~ flag.
+  C4 is confirmed upstream (no patch needed).
+
+*** Refuted / Needs Fix
+
+- *Reply payload format:* Must be ~{"result": value}~ or
+  ~{"error": msg, "type": name}~. Our channel.scm sends bare CBOR
+  values. channel.scm needs ~write-reply~ and ~write-reply-error~
+  wrappers matching the server's expected format.
+- *Schema format:* ~{"type": "integers"}~ returned "Unsupported schema."
+  Need to investigate actual schema type names. May be ~"integer"~
+  singular, or a different vocabulary entirely.
+- *Packet multiplexer:* channel.scm assumes each channel reads
+  sequentially from the port. In reality, packets from different
+  channels arrive interleaved. Need a dispatcher that buffers packets
+  per channel ID. Without this, channel-recv-reply! may read a packet
+  meant for a different channel.
+- *run_test message format:* ~test_cases~ is at top level, not nested
+  in ~settings~. ~channel_id~ is required. protocol.scm's ~msg-run-test~
+  needs update.
+- *run_test reply races with test_case event:* The server sends the
+  run_test ack and the first test_case event concurrently on different
+  channels. The ack may arrive after the event.
+
+*** Discovered Protocol Details
+
+| Field | Expected | Actual |
+|-------|----------|--------|
+| run_test.test_cases | nested in settings | top-level |
+| run_test.channel_id | not sent | required |
+| reply format | bare CBOR value | ~{"result": v}~ map |
+| status strings | lowercase | UPPERCASE |
+| schema "integers" | supported | unsupported |
+| --stdio | needs patch | already shipped |
+
+*** Architecture Implication: Packet Multiplexer
+
+The current channel.scm design (each channel reads from the shared
+port) breaks when packets are interleaved. Need a central multiplexer:
+
+#+begin_example
+(define-record-type <connection-mux>
+  (port socket channels pending-packets)
+  ...)
+
+(define (mux-read-for-channel! mux channel-id)
+  "Read packets until one for CHANNEL-ID arrives. Buffer others."
+  ...)
+#+end_example
+
+This is the most significant remaining architecture gap. Without it,
+the client can only handle one channel at a time (no concurrent
+test cases, no interleaved events).
+
+** Probe Tools
+
+- ~tools/stdio-probe.scm~ --- exercises full protocol via --stdio
+- ~tools/hegl-probe.scm~ --- socket mode with optional socat proxy
+
 * Summary: CPRR Status After Research
 
 | ID | Conjecture | Prior Status | Post-Research | Confidence |
@@ -1012,11 +1105,12 @@ hegel-core.
 | C1 | Pyodide in Wasmtime | REFUTED | *REFUTED* (confirmed) | VERY HIGH |
 | C2 | hegel-core on WASI | OPEN | *OPEN, conditionally likely* | MEDIUM |
 | C3 | WASI lacks sockets | CONFIRMED-BLOCKING | *CONFIRMED-MITIGATED* | VERY HIGH |
-| C4 | stdio transport | OPEN | *OPEN, viable with caveats* | MEDIUM |
+| C4 | stdio transport | OPEN | *CONFIRMED* (shipped in 0.2.3) | VERY HIGH |
 | C5 | Hypothesis DB/WASI | OPEN | *RED HERRING* (wrong test) | HIGH |
 | C6 | Guile drives python.wasm | OPEN | *BLOCKED, leaning refuted* | HIGH |
 | C7 | CBOR framing uint32-BE | OPEN | *REFUTED* | VERY HIGH |
 | C8 | Client-initiates handshake | OPEN | *CONFIRMED (narrow)* | VERY HIGH |
+| C9 | HEGL impl matches wire format | NEW | *PARTIALLY CONFIRMED* | HIGH |
 
 ** Key Findings
 
