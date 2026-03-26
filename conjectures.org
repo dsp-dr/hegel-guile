@@ -1,0 +1,1067 @@
+#+TITLE: hegel-guile Conjecture Research & Adversarial Review
+#+DATE: 2026-03-24
+#+STARTUP: overview
+#+TODO: OPEN ACTIVE | CONFIRMED REFUTED BLOCKED
+
+* Overview
+
+This document collects deep research and adversarial review for every
+conjecture tracked in the CPRR (Conjecture-Predict-Refute-Revise)
+status log. Two perspectives per conjecture: a /researcher/ who
+establishes context and evidence, and an /adversary/ who attempts to
+refute or challenge the current status.
+
+Numbering note: ~spec.org~ uses C1--C4 for protocol conjectures
+(CBOR framing, handshake direction, snake_case keys, status strings).
+~roadmap.org~ renumbers to C1--C8 spanning both protocol and
+WASM/WASI conjectures. This document uses the roadmap numbering.
+
+Cross-reference:
+
+| Roadmap ID | spec.org ID | Description |
+|------------|-------------|-------------|
+| C1 | --- | Pyodide runs in Wasmtime |
+| C2 | --- | hegel-core deps on CPython WASI |
+| C3 | --- | WASI lacks Unix sockets |
+| C4 | --- | stdio transport viable |
+| C5 | --- | Hypothesis DB on WASI FS |
+| C6 | --- | Guile drives python.wasm (Strategy alpha) |
+| C7 | C1 (spec.org) | CBOR framing is uint32-BE |
+| C8 | C2 (spec.org) | Handshake is client-initiates |
+
+* REFUTED C1: Pyodide runs in Wasmtime
+  :PROPERTIES:
+  :STATUS: REFUTED
+  :DATE: 2026-03-24
+  :END:
+
+** Research
+
+Pyodide is a distribution of CPython compiled to WebAssembly using
+the Emscripten toolchain. It targets browser JavaScript engines and
+Node.js --- not standalone WASM runtimes.
+
+*** Technical Architecture
+
+Pyodide's ~.wasm~ artifact imports from an ~env~ module that
+Emscripten's companion JavaScript glue code provides. These imports
+include memory management primitives (~__memory_base~, ~__table_base~),
+heap resize callbacks (~emscripten_resize_heap~), and POSIX emulation
+shims in JavaScript.
+
+*** Why It Cannot Run in Wasmtime --- Four Independent Blockers
+
+1. *ABI mismatch*: Wasmtime implements WASI (~wasi_snapshot_preview1~).
+   Pyodide imports from ~env~ namespace (Emscripten JS glue). Wasmtime
+   has no ~env~ module. Attempt produces:
+   ~unknown import: env::emscripten_resize_heap has not been defined~.
+
+2. *JavaScript dependency*: Emscripten expects Memory/Table created
+   externally in JavaScript. Pyodide extends this with ~dlopen~/~dlsym~
+   via Emscripten's JS library. WASI has no ~dlopen~ support.
+
+3. *Non-stable ABI*: Emscripten's ~env~ imports change across versions.
+   WASI runtimes implement a stable, versioned interface spec.
+
+4. *STANDALONE_WASM insufficient*: Emscripten Issue #20484 shows even
+   moderately complex programs produce unknown ~env~ imports. CPython
+   is orders of magnitude more complex. Issue #23008 confirms
+   ~STANDALONE_WASM~ still imports filesystem operations from ~env~.
+
+*** Original Motivation
+
+Eliminate native Python dependency for ~hegel-core~. Pyodide packages
+CPython + third-party packages as WASM. Conjecture: bundle ~hegel-core~
+into a single WASM artifact, run via wasmtime.
+
+Refuted immediately upon investigation. Project pivoted to Strategy
+alpha (CPython WASI builds).
+
+*** Alternatives Identified
+
+- *CPython WASI builds* (Strategy alpha): VMware Labs ~python.wasm~.
+- *componentize-py* (Approach B, Phase 4): Bytecode Alliance, v0.21.0.
+- *Native Rust server* (upstream): Antithesis mentions rewriting in Rust.
+- *SPy* (experimental): Antonio Cuni's ~llwasm~ abstraction layer.
+  Proved more challenging than expected due to async/sync mismatch.
+
+** Adversarial Review
+
+*Objective:* Challenge the REFUTED status across five attack vectors.
+
+*** Attack 1: Emscripten STANDALONE_WASM
+
+V8 blog confirms "programs compiled end up using 100% WASI" for simple
+programs. But Emscripten Issue #20484 shows moderately complex programs
+(linked against gtest) produce unknown ~env~ imports. CPython is orders
+of magnitude more complex.
+
+*Verdict:* FAILS. The gap between "hello world" and "CPython with
+extensions" is architectural, not incremental.
+
+*** Attack 2: Pyodide WASI Support Since Refutation
+
+Pyodide 0.29.3 remains Emscripten-only. PEP 776 entrenches Emscripten
+as the target. No WASI backend, feature branch, RFC, or roadmap item.
+
+*Verdict:* FAILS. Project moved further from WASI.
+
+*** Attack 3: Emscripten-to-WASI Shim
+
+~dlopen~/~dlsym~ requires Emscripten's JS-based dynamic linker
+(manipulates function table via JS APIs). Component Model Issue #401
+(dlopen in component model) remains open. Shared-Everything Linking
+RFC: "true dynamic linking in the sense of loading code at runtime
+is not supported."
+
+*Verdict:* FAILS. Fundamental architectural mismatch.
+
+*** Attack 4: Fundamental vs. Missing Features
+
+"Pyodide without C extensions" is just CPython-on-WASM, which already
+exists as ~python.wasm~. This is Strategy alpha, not C1.
+
+*Verdict:* FAILS. Semantic trick.
+
+*** Attack 5: What Would It Take?
+
+- Path A: Pyodide adds WASI backend. 2-4 years. Zero team interest.
+- Path B: WASI runtimes gain Emscripten compat. Near-zero probability.
+- Path C: ~emscripten2wasi~ binary rewriter. No such project exists.
+
+*** Verdict
+
+*REFUTATION STANDS.* Fundamental ABI-level incompatibility.
+
+| Layer | Emscripten (Pyodide) | WASI (Wasmtime) | Bridgeable? |
+|-------|---------------------|-----------------|-------------|
+| System interface | ~env~ module (JS glue) | ~wasi_snapshot_preview1~ | Partial |
+| Dynamic linking | JS-mediated dlopen | Not specified | No |
+| I/O model | Browser/Node APIs | POSIX-like | Partial |
+| FFI | Python <-> JavaScript | None (sandboxed) | No |
+| Module loading | Emscripten loader | Component model (future) | No |
+
+*** Sources
+
+- [[https://github.com/pyodide/pyodide/discussions/5145][Pyodide Discussion #5145: Running with Wasmtime/Wasmer]]
+- [[https://github.com/pyodide/pyodide/issues/558][Pyodide Issue #558: Non-browser WA runtime]]
+- [[https://github.com/emscripten-core/emscripten/issues/20484][Emscripten Issue #20484: STANDALONE_WASM not truly standalone]]
+- [[https://github.com/emscripten-core/emscripten/issues/23008][Emscripten Issue #23008: STANDALONE_WASM imports from env]]
+- [[https://v8.dev/blog/emscripten-standalone-wasm][V8 Blog: Standalone WebAssembly binaries]]
+- [[https://peps.python.org/pep-0776/][PEP 776: Emscripten Support]]
+- [[https://peps.python.org/pep-0816/][PEP 816: WASI Support]]
+- [[https://github.com/WebAssembly/component-model/issues/401][Component Model Issue #401: dlopen]]
+- [[https://github.com/bytecodealliance/componentize-py][componentize-py (Bytecode Alliance)]]
+- [[https://antocuni.eu/2025/02/26/over-the-clouds-cpython-pyodide-and-spy/][SPy: Over the clouds (Antonio Cuni)]]
+
+* OPEN C2: hegel-core Dependencies on CPython WASI
+  :PROPERTIES:
+  :STATUS: OPEN
+  :DEADLINE: <2026-04-04>
+  :END:
+
+** Research
+
+*** Exact Dependency Tree (from uv.lock)
+
+#+begin_example
+hegel-core 0.2.2
+  +-- cbor2 5.9.0
+  +-- click 8.3.1
+  |     +-- colorama 0.4.6  (Windows only, skipped)
+  +-- hypothesis 6.151.9
+        +-- sortedcontainers 2.4.0
+#+end_example
+
+Five packages, four relevant. All ship ~py3-none-any~ wheels (pure
+Python distribution).
+
+*** cbor2: LOW RISK
+
+cbor2 is "implemented in pure python with an optional C backend."
+The ~py3-none-any.whl~ (24.6 kB) contains the complete pure-Python
+implementation. ~CBOR2_BUILD_C_EXTENSION=0~ disables C extension at
+build time. On PyPy, runs "with almost identical performance."
+
+WASI implication: Install the pure wheel. C extension never loaded.
+
+*** Hypothesis: LOW-MEDIUM RISK
+
+Hypothesis 6.151.9 ships as ~py3-none-any~ (529 kB). No C extensions.
+Sole dependency: sortedcontainers (pure Python, zero deps).
+
+Risk areas:
+- *Threading*: Imports ~threading~ and uses ~Lock~. CPython WASI has
+  a stub ~threading~ module: ~Lock~ works as no-op in single-threaded
+  mode, but ~Thread~ does not. ~BackgroundWriteDatabase~ spawns threads
+  but is NOT the default backend.
+- *zlib*: ~hypothesis.core~ unconditionally imports ~zlib~ at module
+  level. CPython WASI builds historically lack zlib (cpython#93819).
+  VMware Labs builds statically link it; other builds may not.
+- *Deadline enforcement*: Uses ~time.perf_counter()~ (available on WASI),
+  NOT ~signal.SIGALRM~. No risk.
+- *Database*: Default is ~DirectoryBasedExampleDatabase~ (flat files),
+  NOT SQLite. See C5.
+
+*** click: LOW RISK
+
+Pure Python (108 kB). ~isatty()~ returns False under WASI (correct
+behavior, click degrades to non-interactive mode). No subprocess or
+signal usage in CLI parsing path.
+
+*** sortedcontainers: NO RISK
+
+Pure Python, zero dependencies. "Fast as C-extensions" via pure Python.
+
+*** CPython WASI Build Status
+
+Available from ~brettcannon/cpython-wasi-build~:
+- Python 3.14.3 (WASI SDK 24, stable)
+- Python 3.15.0a7 (WASI SDK 30, pre-release)
+PEP 816 formalizes WASI as tier 2 starting Python 3.13.
+
+Known limitations: No threading, no subprocess, no signals, no socket,
+no dlopen. WASI SDK 26/27 have known hang bugs (thread support code).
+
+** Adversarial Review
+
+*** Attack 1: The zlib Problem (SHOWSTOPPER)
+
+~hypothesis.core~ unconditionally imports ~zlib~. Not behind try/except.
+Used for database serialization (~choices_from_bytes~, ~choices_to_bytes~).
+
+VMware Labs builds include zlib. But this is a build-configuration
+dependency: "runs on CPython WASI" becomes "runs on one specific
+WASI build that remembered to link zlib."
+
+componentize-py also hit this: componentize-py#96.
+
+*Severity:* MEDIUM. Survivable if pinned to VMware Labs builds.
+
+*** Attack 2: The threading Problem
+
+~hypothesis.core~ imports ~threading~ and uses ~Lock~.
+~hypothesis.database~ imports ~Thread~ for ~BackgroundWriteDatabase~.
+
+~Lock~ works as no-op in single-threaded WASI. But ~Thread.start()~
+will fail if ~BackgroundWriteDatabase~ is activated.
+
+*Severity:* MEDIUM. Landmine if default database changes upstream.
+
+*** Attack 3: hashlib/sha384 Dependency
+
+~hypothesis.database~ uses ~from hashlib import sha384~. Depends on
+whether the build statically links a crypto library.
+
+*Severity:* LOW-MEDIUM. Same fragility as zlib.
+
+*** Attack 4: tempfile.mkdtemp
+
+Hypothesis uses ~tempfile~ for atomic writes. Requires writable ~/tmp~
+in the WASI filesystem view. Must pass ~--dir /tmp::/tmp~ to wasmtime.
+
+*Severity:* LOW. Workable with correct invocation.
+
+*** Revised Verification Script
+
+#+begin_src sh
+# Use brettcannon builds (more current than vmware-labs)
+# Step 1: Import test
+wasmtime run --dir .::/ --dir /tmp::/tmp \
+  --env PYTHONPATH=/wasi-site-packages \
+  python.wasm -- -c \
+  "import zlib; import threading; import hypothesis; import cbor2; import click; print('C2 PASSED')"
+
+# Step 2: Functional test
+wasmtime run --dir .::/ --dir /tmp::/tmp \
+  --env PYTHONPATH=/wasi-site-packages \
+  python.wasm -- -c "
+from hypothesis import given, strategies as st
+@given(st.integers())
+def test_identity(x):
+    assert x == x
+test_identity()
+print('C2-FUNCTIONAL PASSED')
+"
+#+end_src
+
+*** Verdict
+
+*OPEN, conditionally likely.* All deps ship pure-Python wheels.
+Import chain should succeed on VMware Labs builds (zlib included).
+Runtime behavior subject to threading stub adequacy and tempfile
+mapping. Recommended: test import first (cheap), then functional test.
+
+| Sub-claim | Verdict | Blocker |
+|-----------|---------|---------|
+| All deps importable | LIKELY | zlib build-dependency |
+| cbor2 pure-Python path | CONFIRMED by design | None |
+| Hypothesis engine runs | PLAUSIBLE | Threading stubs must suffice |
+| click CLI parsing | PLAUSIBLE | isatty degrades gracefully |
+| hegel-core serves | BLOCKED | Requires C4 (stdio transport) |
+
+*** Sources
+
+- [[https://github.com/agronholm/cbor2][cbor2 GitHub]]
+- [[https://github.com/python/cpython/issues/93819][cpython#93819: No zlib in WASI]]
+- [[https://github.com/bytecodealliance/componentize-py/issues/96][componentize-py#96: zlib required]]
+- [[https://snarky.ca/state-of-wasi-support-for-cpython-march-2026/][State of WASI for CPython: March 2026 (Brett Cannon)]]
+- [[https://snarky.ca/testing-a-project-using-the-wasi-build-of-cpython-with-pytest/][Testing with WASI CPython (Brett Cannon)]]
+- [[https://github.com/brettcannon/cpython-wasi-build/releases][brettcannon/cpython-wasi-build releases]]
+
+* CONFIRMED C3: WASI Lacks Unix Sockets
+  :PROPERTIES:
+  :STATUS: CONFIRMED-MITIGATED
+  :DATE: 2026-03-24
+  :END:
+
+** Research
+
+*** WASI Preview 1: No Networking At All
+
+Provides: filesystem access, CLI args, env vars, clocks, random, basic
+I/O streams. No ~socket()~, ~bind()~, ~connect()~. CPython WASI stubs
+out the entire ~socket~ module (cpython#96320, closed "not planned").
+
+*** WASI Preview 2: TCP and UDP Only
+
+~wasi:sockets~ defines ~ipv4~ and ~ipv6~ address families.
+*AF_UNIX is explicitly out of scope.* POSIX compat doc marks
+~socketpair~ as "not supported --- specifically for UNIX domain
+sockets. Out of scope for this proposal."
+
+*** WASI Preview 3: Async, Not New Socket Types
+
+Headline feature is native async (~stream<T>~, ~future<T>~). No
+mention of Unix domain sockets, IPC, or AF_UNIX on the roadmap.
+
+*** WASI IPC Proposal: Dead
+
+WebAssembly/WASI#49 requested IPC with Unix sockets as use case.
+Maintainer response (Dan Gohman, Aug 2021): "There hasn't been
+anyone volunteering to advance Unix-specific APIs." No subsequent
+activity.
+
+*** Runtime Extensions
+
+| Runtime | TCP/UDP | AF_UNIX | Standard |
+|---------|---------|---------|----------|
+| Wasmtime | Yes (wasip2+) | No | WASI 0.2/0.3 |
+| WasmEdge | Yes | Yes (custom, Linux-only) | Non-standard |
+| Wasmer/WASIX | Yes | Unclear | Non-standard (WASIX) |
+
+** Adversarial Review
+
+*** Attack 1: TCP Loopback as Alternative
+
+~wasi:sockets/tcp~ supports TCP. hegel-core could listen on
+~127.0.0.1:PORT~ instead of Unix socket. Viable but requires:
+- hegel-core code changes (~--transport tcp~)
+- Port allocation in CI environments
+- WASI Preview 2 TCP in python.wasm (currently uncertain)
+- Security surface (local process can connect)
+
+*Worth filing as C9.* Strictly superior to stdio for bidirectional
+full-duplex communication.
+
+*** Attack 2: Pre-opened FD Pass-through
+
+wasmtime supports ~--tcplisten~ for pre-opening TCP listeners.
+No equivalent for Unix sockets. Even if added, Python's WASI build
+maps pre-opened fds to file-like objects, not ~socket~ objects.
+
+*Verdict:* FAILS.
+
+*** Attack 3: stdio Bypasses C3 Entirely
+
+C3 is confirmed as a fact, but "blocking" is overstated. The stdio
+transport (C4) completely sidesteps Unix sockets. If C4 passes, C3
+is moot for the WASM track.
+
+*** Verdict
+
+*CONFIRMED, reclassify from BLOCKING to MITIGATED.* The factual claim
+is correct: no WASI spec or Wasmtime extension provides AF_UNIX.
+But the project's Phase 2 design (stdio transport) sidesteps it.
+C3 blocks exactly one approach (direct AF_UNIX from inside WASM)
+that was never the plan.
+
+*** Sources
+
+- [[https://github.com/WebAssembly/wasi-sockets][wasi:sockets (archived)]]
+- [[https://github.com/WebAssembly/wasi-sockets/blob/main/Posix-compatibility.md][WASI Sockets POSIX Compatibility]]
+- [[https://github.com/WebAssembly/WASI/issues/49][WASI IPC Issue #49]]
+- [[https://github.com/WasmEdge/WasmEdge/issues/2138][WasmEdge AF_UNIX Issue #2138]]
+- [[https://github.com/python/cpython/issues/96320][cpython#96320: WASI socket support]]
+- [[https://wasi.dev/roadmap][WASI Roadmap]]
+
+* OPEN C4: stdio Transport Viable
+  :PROPERTIES:
+  :STATUS: OPEN
+  :DEADLINE: <2026-04-04>
+  :END:
+
+** Research
+
+*** Current hegel-core Transport Architecture
+
+From reading hegel-core source directly:
+- CLI takes ~socket_path~ as argument (NOT printed to stdout)
+- Creates AF_UNIX SOCK_STREAM, binds, listens, accepts
+- ~Connection~ class takes ~socket.socket~, uses ~sock.recv()~ and
+  ~sock.sendall()~ (socket-specific, not generic stream methods)
+- Dedicated reader thread in ~Connection~ calls ~read_packet()~ in loop
+- All debug output uses ~print(..., file=sys.stderr)~
+
+hegel-rust: creates temp dir, generates socket path, passes as CLI arg,
+redirects server stdout/stderr to ~.hegel/server.log~, sets
+~PYTHONUNBUFFERED=1~.
+
+*Key finding:* hegel-guile's ~server.scm~ incorrectly assumes hegel-core
+writes socket path to stdout. It's actually a CLI argument.
+
+*** What stdio Transport Would Require
+
+Minimal patch (~100-150 lines):
+1. ~__main__.py~: Add ~--transport [socket|stdio]~, skip socket creation
+2. ~packet.py~: Abstract ~sock.recv()~ to ~stdin.buffer.read()~,
+   ~sock.sendall()~ to ~stdout.buffer.write() + flush()~
+3. ~connection.py~: Accept file-like pair, not just ~socket.socket~
+4. Readiness: send handshake immediately (LSP pattern), no READY signal
+
+*** Precedents
+
+- *LSP*: stdio is the default transport. ~Content-Length~ headers + JSON.
+- *DAP*: Single session mode uses stdin/stdout.
+- *MCP*: Supports both stdio and HTTP/SSE. stdio recommended for local.
+- *OpenAI Codex*: ~stdio-to-uds~ bridge (PR #5350) demonstrates
+  mechanical interchangeability.
+
+*** Upstream Receptiveness
+
+hegel-core Issue #61 (Windows support): "The main blocker is our use
+of Unix sockets." hegel.dev "How Hegel Works": "The transport layer
+is currently unix sockets, but the protocol is agnostic to the
+particular choice of transport layer."
+
+Transport pluggability is explicitly intended by design.
+
+** Adversarial Review
+
+Seven attack surfaces identified. Two HIGH severity.
+
+*** Attack 1: Hypothesis stdout Pollution (HIGH)
+
+~hypothesis.reporting.report()~ calls ~print()~ which writes to
+~sys.stdout~. ~ConjectureRunner._report~ defaults to ~print~.
+
+*Failure scenario:* Hypothesis writes ~"Trying example: ..."~ to
+~sys.stdout.buffer~. Client reads ~b"Tryi"~ as HEGL magic
+(expects ~0x4845474C~). Assertion fails or reads garbage length.
+
+*Mitigation:* Redirect ~sys.stdout~ to stderr after claiming
+~sys.stdout.buffer~ for the protocol. Use ~os.dup2~ for fd-level
+redirection. The roadmap does not mention this.
+
+*** Attack 2: Python Buffering (MEDIUM)
+
+~sys.stdout.buffer~ is block-buffered when stdout is a pipe (8192
+bytes). Short packets sit in buffer until flush.
+
+*Failure scenario:* Handshake response not flushed. Client blocks
+forever.
+
+*Mitigation:* ~PYTHONUNBUFFERED=1~ (already set by hegel-rust),
+explicit ~flush()~ after every frame, or single-write per frame.
+
+*** Attack 3: stderr Pipe Deadlock (MEDIUM)
+
+If stderr is a pipe nobody reads and hegel-core fills the OS buffer
+(64K Linux, ~64K macOS), the write blocks. Protocol deadlocks.
+
+*Mitigation:* Redirect stderr to file at spawn time.
+
+*** Attack 4: SIGPIPE Under WASI (LOW-MEDIUM)
+
+Python ignores SIGPIPE (~SIG_IGN~). Under WASI, signal handling absent.
+~fd_write~ may return unexpected errno.
+
+*Mitigation:* Wrap writes in try/except for ~BrokenPipeError~.
+
+*** Attack 5: Startup Synchronization (HIGH)
+
+~"READY\n"~ mixes text and binary on same stream. Block buffering
+can coalesce READY with first packet. Guile must switch from text to
+binary mode on same port.
+
+*Better approach:* Skip READY entirely. Client sends handshake
+immediately after spawn (LSP pattern). Server processes it when ready.
+No mixed-mode problem.
+
+*** Attack 6: WASI Pipe Semantics (MEDIUM)
+
+No ~select()~/~poll()~ in CPython WASI. No write atomicity guarantee.
+Single-process deadlock if host and guest share thread.
+
+*Mitigation:* Empirical testing per C4 test plan.
+
+*** Attack 7: Single-Client Limitation (LOW now, HIGH for Bombadil)
+
+stdio is inherently single-client. No parallel test execution.
+Bombadil requires concurrent tests.
+
+*Mitigation:* Accept and document. Per-test-file subprocess model.
+
+*** Recommendation: Split C4
+
+- *C4a*: stdio transport viable on native CPython. Testable now.
+- *C4b*: stdio transport viable through wasmtime's WASI pipes.
+  Depends on C2. Requires empirical measurement.
+
+*** Summary
+
+| Attack | Severity | Roadmap Addresses? |
+|--------|----------|-------------------|
+| stdout pollution | HIGH | No |
+| Python buffering | MEDIUM | No |
+| stderr deadlock | MEDIUM | Partially |
+| SIGPIPE/WASI | LOW-MEDIUM | No |
+| Startup sync | HIGH | Partially (wrong approach) |
+| WASI pipe semantics | MEDIUM | Yes (C4 test) |
+| Single-client | LOW/HIGH | No |
+
+*** Verdict
+
+*OPEN, LIKELY VIABLE with caveats.* Mechanically straightforward.
+Main risks: stdout pollution (mitigable with fd redirection) and
+startup sync (solved by LSP pattern). The naive implementation in
+the roadmap is necessary but not sufficient.
+
+*** Sources
+
+- [[https://github.com/hegeldev/hegel-core/issues/61][hegel-core Issue #61: Windows support]]
+- [[https://hegel.dev/explanation/how-hegel-works][How Hegel Works]]
+- [[https://github.com/modelcontextprotocol/modelcontextprotocol/discussions/63][MCP stdio vs SSE discussion]]
+- [[https://github.com/openai/codex/pull/5350][OpenAI Codex stdio-to-uds PR]]
+
+* OPEN C5: Hypothesis DB on WASI Filesystem
+  :PROPERTIES:
+  :STATUS: OPEN (Red Herring)
+  :DEADLINE: <2026-04-04>
+  :END:
+
+** Research
+
+*** Critical Finding: Hypothesis Does NOT Use SQLite
+
+The roadmap's C5 test script tests SQLite. *Hypothesis does not use
+SQLite.* The default and only file-based backend is
+~DirectoryBasedExampleDatabase~ --- a flat-file store using one
+directory per test key and one file per example value.
+
+The C5 test measures the wrong thing.
+
+*** DirectoryBasedExampleDatabase Filesystem Operations
+
+| Operation | WASI Preview 1 |
+|-----------|---------------|
+| ~Path.mkdir(parents=True)~ | Supported (~path_create_directory~) |
+| ~Path.exists()~ | Supported (~path_filestat_get~) |
+| ~os.listdir()~ | Supported (~fd_readdir~) |
+| ~Path.read_bytes()~ | Supported (~fd_read~) |
+| ~tempfile.mkstemp()~ | Supported (needs ~/tmp~ mapping) |
+| ~Path.rename()~ | Supported (~path_rename~) |
+| ~Path.unlink()~ | Supported (~path_unlink_file~) |
+
+NOT used: flock, mmap, fsync, chmod, symlink, SQLite.
+
+*** The Escape Hatch: database=None
+
+The hegel-core wire protocol accepts ~"database": null~ in the
+~run_test~ message. This disables persistence entirely. Hypothesis
+runs, shrinking works, everything functions. You lose replay of
+previously-found failures across runs, but the core property-testing
+loop is unaffected.
+
+Additionally, Hypothesis automatically falls back to
+~InMemoryExampleDatabase~ if the default directory is unusable.
+
+** Adversarial Review
+
+*** Attack 1: The Test is Wrong
+
+The roadmap tests SQLite. Hypothesis uses flat files. The test proves
+nothing about Hypothesis's persistence. The acceptance test would pass
+while the actual database could fail (or vice versa).
+
+*Verdict:* C5 test must be redesigned.
+
+*** Attack 2: os.access with X_OK
+
+~_usable_dir()~ calls ~os.access(path, os.R_OK | os.W_OK | os.X_OK)~.
+WASI may not support permission checking meaningfully. If ~os.access~
+returns False, Hypothesis silently falls back to ~InMemoryExampleDatabase~.
+
+*Severity:* LOW. Silent fallback is acceptable.
+
+*** Attack 3: tempfile.mkstemp
+
+~save()~ uses ~tempfile.mkstemp()~ for atomic writes. Requires ~/tmp~
+mapped via ~--dir /tmp::/tmp~. If unavailable, ~save()~ catches
+~OSError~ and silently discards the write.
+
+*Severity:* LOW. Silent degradation.
+
+*** Revised C5 Test
+
+#+begin_src sh
+wasmtime run --dir /tmp/work::/work --dir /tmp::/tmp \
+  python.wasm -- -c "
+import os, tempfile
+from pathlib import Path
+root = Path('/work/.hypothesis/examples')
+root.mkdir(parents=True, exist_ok=True)
+key_dir = root / 'abcdef0123456789'
+key_dir.mkdir(exist_ok=True)
+fd, tmpname = tempfile.mkstemp()
+os.write(fd, b'test value')
+os.close(fd)
+Path(tmpname).rename(key_dir / 'fedcba9876543210')
+entries = os.listdir(key_dir)
+assert len(entries) == 1
+data = (key_dir / entries[0]).read_bytes()
+assert data == b'test value'
+print('C5 PASSED')
+"
+#+end_src
+
+*** Verdict
+
+*OPEN, likely a RED HERRING.* Hypothesis's flat-file database uses
+only basic filesystem ops that WASI Preview 1 supports. Even if it
+fails, ~database=None~ disables persistence entirely. The roadmap's
+SQLite test should be replaced with the flat-file test above.
+
+*** Sources
+
+- [[https://github.com/HypothesisWorks/hypothesis/blob/master/hypothesis-python/src/hypothesis/database.py][hypothesis/database.py source]]
+- [[https://hypothesis.readthedocs.io/en/latest/database.html][Hypothesis Database Documentation]]
+- [[https://wasmlabs.dev/articles/sqlite-wasi-support/][SQLite WASI support (Wasm Labs)]]
+
+* BLOCKED C6: Guile Drives python.wasm (Strategy alpha)
+  :PROPERTIES:
+  :STATUS: BLOCKED-BY-EVIDENCE
+  :DEADLINE: <2026-06-14>
+  :END:
+
+** Research
+
+*** Guile Subprocess Management
+
+Guile provides bidirectional pipes via ~open-process~ from ~(ice-9 popen)~
+returning three values: input port, output port, PID. Ports are
+unbuffered (critical for binary protocol). The Hegel protocol's
+request-response pattern avoids the ~OPEN_BOTH~ deadlock hazard.
+
+*** wasmtime stdio Passthrough
+
+From wasmtime source (~src/commands/run.rs~): ~inherit_stdin~,
+~inherit_stdout~, ~inherit_stderr~ all default to ~true~. Data is
+byte-transparent. CBOR/HEGL frames pass through unmodified.
+
+*** Startup Latency Estimate
+
+| Component | Cold Start | With AOT |
+|-----------|-----------|----------|
+| wasmtime + JIT compile | ~800ms | ~100ms |
+| CPython init | ~140ms | ~17ms |
+| import hypothesis | ~200-500ms | ~200-500ms |
+| import cbor2 | ~50ms | ~50ms |
+| hegel-core init | ~20ms | ~20ms |
+| *Total* | *~1.2-1.5s* | *~400-700ms* |
+
+(AOT is DEFERRED in roadmap. Without it, realistic total: 6-12s when
+accounting for WASM interpretation overhead on CPython init and imports.)
+
+** Adversarial Review
+
+*** Attack 1: Dependency Conjunction (HIGH)
+
+C6 = C2 AND C3-workaround AND C4 AND C5. Four OPEN conjectures.
+At P(each) = 0.7: P(C6) <= 0.7^4 = 0.24.
+
+Plus an unnumbered dependency: "the hegel-core 0.2.2 protocol can be
+driven over stdio pipes at all."
+
+*** Attack 2: Protocol Complexity Underestimated (CRITICAL)
+
+The EVV against hegel-core 0.2.2 revealed HEGL packet framing:
+
+#+begin_example
+[magic 0x4845474C][CRC32][channel_id][message_id][payload_length][payload][0x0A]
+#+end_example
+
+This is a multiplexed channel protocol with integrity checking, not
+"length-prefixed CBOR frames." The roadmap's Phase 2 assumed simpler
+framing. Channel multiplexing over a single stdio pipe requires
+implementing channel demux in Guile --- no longer a "thin protocol
+adapter."
+
+*** Attack 3: Bidirectional Pipe Deadlock (HIGH)
+
+Classic: both sides write, both buffers fill, both block. Current
+~server.scm~ does purely synchronous I/O. Requires event loop or
+separate threads --- contradicts "thin client" philosophy.
+
+*** Attack 4: Startup Latency (HIGH)
+
+6-12 seconds without AOT. For interactive test runner, catastrophic.
+AOT deferred. Even with AOT, CPython init + Hypothesis import still
+takes seconds inside WASM.
+
+*** Attack 5: Memory Overhead (MEDIUM)
+
+~400-550MB per test run (4-5x native ~80-120MB). No demand paging in
+WASM linear memory.
+
+*** Attack 6: Value Proposition (CRITICAL)
+
+Replaces 1 dependency (Python) with 5 (wasmtime, python.wasm, vendored
+packages, patched hegel-core, patched cbor2). Target audience (Guile
+developers building GNU software) already has Python. The intersection
+of "uses Guile 3" and "cannot install Python" is the empty set.
+
+If Antithesis ships ~hegel-server-rs~, entire WASM track is obsoleted.
+
+*** Attack 7: HEGL Protocol Makes Stdio Harder Than Expected (HIGH)
+
+Channel multiplexing means interleaved messages on multiple logical
+channels. Over pipes, no way to atomically check "data available AND
+write buffer not full." Requires mini event loop, contradicting
+CLAUDE.md's "thin protocol adapter" axiom.
+
+*** Recommendation
+
+*Mark BLOCKED-BY-EVIDENCE, disposition toward REFUTED.*
+
+| Factor | Severity |
+|--------|----------|
+| Dependency conjunction | HIGH |
+| Protocol complexity (HEGL) | CRITICAL |
+| Pipe deadlock risk | HIGH |
+| Startup latency (6-12s) | HIGH |
+| Memory overhead (4-5x) | MEDIUM |
+| Value proposition | CRITICAL |
+| Upstream obsolescence risk | HIGH |
+
+*Rational course:* Complete Phase 1. Fix HEGL framing. Ship working
+client requiring ~pip install hegel-core~. Monitor for ~hegel-server-rs~.
+
+*** Sources
+
+- [[https://www.gnu.org/software/guile/manual/html_node/Pipes.html][Guile Pipes (Reference Manual)]]
+- [[https://github.com/bytecodealliance/wasmtime/blob/main/src/commands/run.rs][wasmtime run.rs source]]
+- [[https://snarky.ca/testing-a-project-using-the-wasi-build-of-cpython-with-pytest/][Testing with WASI CPython (Brett Cannon)]]
+
+* REFUTED C7: CBOR Framing is uint32-BE
+  :PROPERTIES:
+  :STATUS: REFUTED
+  :DATE: 2026-03-24
+  :END:
+
+** Research
+
+*** Ground Truth: The Actual HEGL Packet Format
+
+Extracted from ~hegeldev/hegel-rust~ (~src/protocol/packet.rs~) and
+confirmed identically in ~hegeldev/hegel-core~
+(~src/hegel/protocol/packet.py~, using ~struct.pack(">5I", ...)~):
+
+#+begin_example
+Offset  Size  Field            Notes
+------  ----  ---------------  --------------------------------
+0       4     Magic            0x4845474C ("HEGL"), big-endian
+4       4     CRC32 checksum   Over header (checksum zeroed) + payload
+8       4     Channel ID       u32 BE (LSB = source bit)
+12      4     Message ID       u32 BE (MSB = reply bit)
+16      4     Payload Length   u32 BE
+20      N     Payload          CBOR bytes (or raw for handshake)
+20+N    1     Terminator       0x0A
+#+end_example
+
+Total framing overhead: 21 bytes + payload, not 4 bytes + payload.
+
+*** What hegel-guile Currently Implements
+
+~cbor.scm~ lines 110-118: writes bare 4-byte BE length + CBOR payload.
+Missing: magic number, CRC32, channel ID, message ID, terminator, all
+channel multiplexing logic.
+
+*** How Failure Manifests
+
+1. ~cbor-decode-from-port~ reads first 4 bytes: magic ~0x4845474C~
+2. Interprets as length: 1,212,501,068 bytes
+3. Attempts to ~read-bytes!~ ~1.2 GB from socket
+4. Blocks forever (server sent ~50 bytes)
+5. *Deadlock*
+
+Conversely: server reads hegel-guile's 4-byte length prefix, expects
+20-byte header with magic ~0x4845474C~. Gets CBOR bytes instead.
+~assert magic == PACKET_MAGIC~ fails immediately.
+
+*** Channel Multiplexing
+
+- Channel 0: control channel (handshake, ~run_test~ commands)
+- Client channels: odd IDs (~(id << 1) | 1~)
+- Server channels: even IDs (~id << 1~)
+- Channel close: special payload ~0xFE~ (invalid CBOR, by design)
+  with message ID ~(1 << 31) - 1~
+
+*** Message Vocabulary is Wrong
+
+The actual protocol uses ~"command"~ key (not ~"type"~). Values:
+~"run_test"~ (not ~"start_test"~), ~"generate"~ (not ~"draw"~),
+~"mark_complete"~ (not ~"finish_test_case"~). Server sends ~"event"~
+messages (not ~"ok"~ responses).
+
+The entire ~protocol.scm~ message constructor set is incorrect.
+
+** Adversarial Review
+
+*** Attack 1: Is the Payload Length Field uint32-BE?
+
+Yes. Within the HEGL header, the payload length at offset 16 IS
+uint32-BE. The conjecture is partially correct about this one field.
+But "CBOR framing is uint32-BE" characterizes the entire framing as
+a single 4-byte prefix, which is categorically wrong.
+
+*** Attack 2: Distinguishing Byte Patterns (for socat verification)
+
+- HEGL magic first 4 bytes: ~48 45 47 4C~
+- uint32-BE length for 47-byte payload: ~00 00 00 2F~
+- If byte 0 is ~0x48~, it is magic (HEGL), not a length
+- If byte 0 is ~0x00~, it is a length (uint32-BE for small payload)
+
+*** Attack 3: Version Drift
+
+Could the protocol have changed between versions? The
+~PROTOCOL_VERSION = 0.7~ constant and ~HANDSHAKE_STRING =
+b"hegel_handshake_start"~ appear in both hegel-core and hegel-rust,
+suggesting this is the stable format.
+
+*** Required Changes for hegel-guile
+
+| File | Impact |
+|------|--------|
+| ~cbor.scm~ | Replace framing with HEGL packet read/write |
+| ~protocol.scm~ | All message constructors wrong. Need channel-aware send/recv. |
+| ~server.scm~ | Handshake is raw bytes, not CBOR. Socket path is CLI arg, not stdout. |
+| ~test-case.scm~ | ~tc-draw~ must use ~"generate"~ not ~"draw"~ |
+| ~test.scm~ | Use ~"run_test"~ on control channel, ~"mark_complete"~ not ~"finish_test_case"~ |
+| NEW: ~packet.scm~ | HEGL packet encode/decode with magic, CRC32, terminator |
+| NEW: ~channel.scm~ | Multiplexed channels, request/reply correlation by message ID |
+| NEW: CRC32 | Guile has no built-in CRC32; implement or FFI to zlib |
+
+*** Verdict
+
+*REFUTED.* Not merely wrong in detail --- wrong in kind. The Hegel
+wire protocol uses a structured 20-byte packet header with magic,
+CRC32, channel multiplexing, and message IDs. The assumption of a
+bare 4-byte length prefix is a fundamental mischaracterization.
+
+Also refutes spec.org C-001. The existing test suite
+(~test-protocol.scm~) validates the wrong format.
+
+*** Sources
+
+- ~hegeldev/hegel-rust~ ~src/protocol/packet.rs~ (ground truth)
+- ~hegeldev/hegel-core~ ~src/hegel/protocol/packet.py~ (confirmed)
+- ~hegeldev/hegel-core~ ~docs/library-api.md~ (API spec)
+
+* CONFIRMED C8: Handshake is Client-Initiates
+  :PROPERTIES:
+  :STATUS: CONFIRMED (narrow), IMPLEMENTATION WRONG
+  :DATE: 2026-03-24
+  :END:
+
+** Research
+
+*** Ground Truth from hegel-core Source
+
+~connection.py~ lines 189-200:
+
+#+begin_src python
+def receive_handshake(self):
+    assert not self._handshake_done
+    self._handshake_done = True
+    packet = self.control_channel.read_request()
+    assert packet.payload == HANDSHAKE_STRING
+    self.control_channel.write_reply_bytes(
+        packet.message_id, f"Hegel/{PROTOCOL_VERSION}".encode("ascii")
+    )
+#+end_src
+
+Server calls ~read_request()~ first --- blocks waiting for client.
+*Client sends first. C8 is confirmed.*
+
+*** But Everything Else is Wrong
+
+*Wrong framing:* hegel-guile writes 4 bytes length + CBOR. Server
+expects 20-byte HEGL header with magic ~0x4845474C~. Immediate
+~AssertionError~ on magic check.
+
+*Wrong handshake payload:* hegel-guile sends CBOR alist:
+~(("type" . "handshake") ("client" . "hegel-guile") ("version" . "0.1.0"))~
+
+Actual: raw ASCII ~b"hegel_handshake_start"~ (21 bytes, not CBOR).
+Server asserts ~packet.payload == HANDSHAKE_STRING~. Any other
+payload fails.
+
+Server responds with raw ASCII ~b"Hegel/0.7"~ (not a CBOR map with
+~server_version~).
+
+*Wrong command vocabulary:* Messages use ~"command"~ key (not ~"type"~).
+Values: ~"run_test"~, ~"generate"~, ~"mark_complete"~. Server sends
+~"event"~ messages. The entire ~protocol.scm~ vocabulary is fiction.
+
+*Wrong server discovery:* hegel-guile assumes server prints socket path
+to stdout. Actual: client creates socket path, passes as CLI argument.
+~__main__.py~ takes ~socket_path~ as ~@click.argument~.
+
+*** Protocol Comparison
+
+| Protocol | Who sends first | Format |
+|----------|----------------|--------|
+| *Hegel* | Client | Raw bytes (~hegel_handshake_start~) |
+| LSP | Client | JSON-RPC ~initialize~ |
+| HTTP/2 | Client | Binary preface magic string |
+| SSH | Server | Banner string |
+
+Hegel most similar to HTTP/2: magic byte string from client, version
+response from server.
+
+*** Handshake on the Wire
+
+Client sends HEGL packet:
+- Channel ID: 0 (control)
+- Message ID: 1
+- Is Reply: false
+- Payload: ~hegel_handshake_start~ (21 bytes, raw ASCII)
+
+Server replies:
+- Channel ID: 0
+- Message ID: 1 with reply bit (bit 31 set)
+- Payload: ~Hegel/0.7~ (9 bytes, raw ASCII)
+
+Client validates version in range (0.6, 0.7). If out of range, panics.
+
+** Adversarial Review
+
+*** Attack 1: Deadlock If Assumption Wrong
+
+Since C8 is confirmed, the deadlock from wrong handshake direction
+does not arise. However, the *framing mismatch* creates a different
+failure:
+
+1. Client writes 4-byte length + CBOR
+2. Server reads 20-byte header, gets length bytes + CBOR as "header"
+3. Magic check fails (~assert magic == PACKET_MAGIC~)
+4. Server closes connection
+5. Client blocks on ~recv-message!~ indefinitely (no timeout)
+6. *Client hangs forever*
+
+*** Severity Assessment
+
+| Issue | Severity |
+|-------|----------|
+| Wrong packet framing | FATAL |
+| Wrong handshake payload (CBOR vs raw ASCII) | FATAL |
+| Wrong command vocabulary | FATAL |
+| Wrong channel model (no multiplexing) | FATAL |
+| Wrong server discovery (stdout vs CLI arg) | FATAL |
+| Missing message ID tracking | FATAL |
+
+*** Remediation Required
+
+1. New ~packet.scm~ module: HEGL packet read/write
+2. New ~channel.scm~ module: multiplexed channels, request/reply
+3. Rewrite ~server.scm~: client creates socket, passes as CLI arg
+4. Rewrite handshake: raw ~hegel_handshake_start~, parse ~Hegel/{version}~
+5. Remove ~msg-handshake~ from ~protocol.scm~ (dead code)
+6. Add ~SUPPORTED_PROTOCOL_VERSIONS~ constant (0.6--0.7)
+
+*** Verdict
+
+*CONFIRMED on the narrow question.* Client sends first. But every
+other detail --- format, encoding, field names, response structure,
+transport framing --- is wrong. The existing test suite validates
+internal consistency of a fictional protocol, not conformance to
+hegel-core.
+
+*** Sources
+
+- ~hegeldev/hegel-core~ ~src/hegel/protocol/connection.py~ (handshake)
+- ~hegeldev/hegel-core~ ~src/hegel/__main__.py~ (~socket_path~ as CLI arg)
+- ~hegeldev/hegel-rust~ ~src/runner.rs~ (client-side handshake)
+- ~hegeldev/hegel-rust~ ~src/protocol/mod.rs~ (~HANDSHAKE_STRING~)
+
+* Summary: CPRR Status After Research
+
+| ID | Conjecture | Prior Status | Post-Research | Confidence |
+|----|-----------|-------------|---------------|------------|
+| C1 | Pyodide in Wasmtime | REFUTED | *REFUTED* (confirmed) | VERY HIGH |
+| C2 | hegel-core on WASI | OPEN | *OPEN, conditionally likely* | MEDIUM |
+| C3 | WASI lacks sockets | CONFIRMED-BLOCKING | *CONFIRMED-MITIGATED* | VERY HIGH |
+| C4 | stdio transport | OPEN | *OPEN, viable with caveats* | MEDIUM |
+| C5 | Hypothesis DB/WASI | OPEN | *RED HERRING* (wrong test) | HIGH |
+| C6 | Guile drives python.wasm | OPEN | *BLOCKED, leaning refuted* | HIGH |
+| C7 | CBOR framing uint32-BE | OPEN | *REFUTED* | VERY HIGH |
+| C8 | Client-initiates handshake | OPEN | *CONFIRMED (narrow)* | VERY HIGH |
+
+** Key Findings
+
+1. *C7 is REFUTED.* The actual wire protocol is HEGL packet framing
+   (20-byte header: magic, CRC32, channel, message ID, length +
+   terminator). The entire framing and protocol layer in hegel-guile
+   must be rewritten. This is the most impactful finding.
+
+2. *C8 is confirmed but hegel-guile's implementation is wrong about
+   everything else.* Wrong framing, wrong handshake payload (CBOR vs
+   raw ASCII), wrong command vocabulary, wrong server discovery,
+   missing channel multiplexing. Six FATAL issues.
+
+3. *C6 (WASM strategy) faces strong adversarial evidence.* Conjunction
+   of unverified dependencies, protocol complexity underestimation,
+   6-12s cold start, questionable value proposition. Phase 1 completion
+   should take priority.
+
+4. *C4 (stdio transport) is viable but harder than described.* Stdout
+   pollution and startup synchronization are HIGH severity. The LSP
+   pattern (send handshake immediately, no READY signal) is the
+   correct approach.
+
+5. *C5 is a red herring.* Hypothesis uses flat files, not SQLite. The
+   C5 test measures the wrong thing. Database can be disabled via
+   ~"database": null~ in the wire protocol.
+
+6. *C3 should be reclassified from BLOCKING to MITIGATED.* The stdio
+   transport sidesteps it entirely.
+
+7. *The spec.org and roadmap.org numbering systems need reconciliation.*
+
+** Critical Path
+
+#+begin_example
+Phase 1 (immediate):
+  1. Implement HEGL packet format (packet.scm) --- C7 fix
+  2. Implement channel multiplexing (channel.scm)
+  3. Fix server discovery (CLI arg, not stdout)
+  4. Fix handshake (raw bytes, not CBOR map)
+  5. Fix command vocabulary (run_test, generate, mark_complete)
+  6. Wire against live hegel-core
+
+Phase 2 (if Phase 1 succeeds AND WASM track not obsoleted by upstream):
+  7. Test C2 (import chain on python.wasm)
+  8. Test C4a (stdio on native CPython)
+  9. Test C4b (stdio through wasmtime)
+#+end_example

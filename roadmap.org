@@ -1,0 +1,320 @@
+#+TITLE: hegel-guile Roadmap
+#+DATE: 2026-03-24
+#+STARTUP: overview
+#+TODO: TODO ACTIVE | DONE BLOCKED DEFERRED
+#+PROPERTY: header-args:sh :results output :mkdirp t
+
+* Upstream Hegel — Watch List
+  :PROPERTIES:
+  :TRACK: upstream
+  :END:
+
+** DONE hegel-rust v0.2.0 — shipped 2026-03-24
+   :PROPERTIES:
+   :UPSTREAM: https://github.com/hegeldev/hegel-rust/releases/tag/v0.2.0
+   :END:
+   Blog post live. hegel-skill shipped. Protocol reference implementation is
+   hegel-rust — the primary ground truth for C2–C6 verification.
+
+   *Action:* Read ~src/lib.rs~ and ~src/client.rs~ to confirm:
+   - Framing (uint32-BE prefix vs alternatives)
+   - Handshake direction (client-initiates assumed in C2)
+   - ~finish_test_case~ status string values
+
+** TODO hegel-go — expected ~Apr 7 2026
+   :PROPERTIES:
+   :UPSTREAM: https://github.com/hegeldev (watch for hegel-go repo)
+   :CONFIDENCE: HIGH
+   :END:
+   "Next week or two" from blog post. Go is the most useful reference for
+   hegel-guile: Go and Guile are similarly close to the metal, neither has
+   macros nor proc-macros, both drive generators via function calls.
+
+   *Action:* When it drops, read the client transport layer. Go channels
+   may reveal async patterns worth considering for Guile.
+
+** TODO hegel-go, hegel-cpp, hegel-ocaml, hegel-typescript — rolling
+   :PROPERTIES:
+   :UPSTREAM: https://hegel.dev
+   :CONFIDENCE: MEDIUM
+   :END:
+   "Coming weeks or months." OCaml is particularly interesting — functional,
+   strong SRFI culture, likely closest to Guile in API style.
+
+   *Action:* When OCaml lands, audit generator combinator API shape. May
+   retroactively inform ~define-composite~ syntax.
+
+** DEFERRED Drop Python dependency (Hypothesis in Rust)
+   :PROPERTIES:
+   :UPSTREAM: https://antithesis.com/blog/2026/hegel/
+   :NOTE: "not promising this will happen or committing to any timelines"
+   :END:
+   If this ships, it obsoletes the entire WASM track (Phases 2–3 below).
+   Monitor hegeldev/hegel-core for a ~hegel-server-rs~ branch or crate.
+
+   The WASM track remains worth pursuing in the interim — it solves the
+   Python dependency problem now, on a shorter timeline.
+
+** DEFERRED Bombadil integration
+   :PROPERTIES:
+   :UPSTREAM: https://github.com/antithesishq/bombadil
+   :NOTE: "prerequisite: Hegel server capable of concurrent tests"
+   :END:
+   Antithesis distributed fault-injection. Hegel protocol must support
+   non-deterministic, concurrent test cases first (Hypothesis currently
+   single-threaded). Watch hegeldev/hegel-core for async test case tracking.
+
+   Relevance to Seven Concerns stack: L3–L5 (resilience, contract testing).
+   BugBash 2026 (Apr 22–24, DC) likely to have concrete announcements.
+
+* Phase 0 — Protocol Verification (NOW → Apr 4)
+  :PROPERTIES:
+  :TRACK: protocol
+  :DEADLINE: <2026-04-04>
+  :END:
+
+** ACTIVE [C2] Verify hegel-core deps on CPython WASI
+   :PROPERTIES:
+   :CONJECTURE: C2
+   :SPEC: spec.org::*C2
+   :END:
+
+   #+begin_src sh :dir /tmp/hegel-wasm-test
+   # Obtain python.wasm
+   mkdir -p /tmp/hegel-wasm-test
+   wget -q https://github.com/vmware-labs/webassembly-language-runtimes/\
+     releases/latest/download/python-3.13.0+latest.zip -O /tmp/py.zip
+   unzip -q /tmp/py.zip -d /tmp/hegel-wasm-test
+
+   # Test import
+   wasmtime run --dir .::/ python.wasm -- -c \
+     "import hypothesis, cbor2, click; print('C2 PASSED')"
+   #+end_src
+
+   *Pass condition:* prints ~C2 PASSED~ without ImportError.
+   *Fail path:* ~cbor2~ C extension import fails without pure fallback.
+   Mitigation: patch cbor2 or vendor pure-Python version.
+
+** TODO [C4] Test --transport stdio on native Python
+   :PROPERTIES:
+   :CONJECTURE: C4
+   :SPEC: spec.org::*C4
+   :BLOCKS: Phase 2 stdio PR
+   :END:
+
+   Before touching WASM: validate the transport change works natively.
+
+   #+begin_src sh
+   # Apply local patch to hegel-core
+   cd /tmp/hegel-core-fork
+   python -m hegel --transport stdio &
+   SERVER_PID=$!
+
+   # Run one round of protocol via nc or socat on stdio
+   # (manual CBOR frame inspection)
+
+   kill $SERVER_PID
+   #+end_src
+
+** TODO [C5] SQLite on WASI filesystem
+   :PROPERTIES:
+   :CONJECTURE: C5
+   :SPEC: spec.org::*C5
+   :END:
+
+   #+begin_src sh
+   mkdir -p /tmp/wasm-sqlite-test/.hegel
+   wasmtime run --dir /tmp/wasm-sqlite-test::/root python.wasm -- -c "
+   import sqlite3, os
+   os.makedirs('/root/.hegel', exist_ok=True)
+   db = sqlite3.connect('/root/.hegel/test.db')
+   db.execute('CREATE TABLE IF NOT EXISTS t (k TEXT, v BLOB)')
+   db.commit()
+   print('C5 PASSED')
+   "
+   #+end_src
+
+** TODO Confirm protocol framing against live hegel-rust
+   :PROPERTIES:
+   :CONJECTURE: C1-refined
+   :NOTE: C1 (Pyodide) refuted; this verifies the CBOR framing assumption
+   :END:
+   Use ~socat~ to capture hegel-rust ↔ hegel-core traffic and verify:
+   - Length prefix: uint32-BE (assumed)
+   - Handshake: client sends first (assumed)
+   - ~finish_test_case~: ~"passed"~ / ~"failed"~ / ~"invalid"~ strings
+
+   #+begin_src sh
+   # Intercept: proxy unix socket and hex-dump frames
+   socat -v UNIX-LISTEN:/tmp/hegel-probe.sock,fork \
+     UNIX:/tmp/hegel-actual.sock 2>&1 | xxd | head -80
+   # Then run cargo test with HEGEL_SOCKET=/tmp/hegel-probe.sock
+   #+end_src
+
+* Phase 1 — Live Integration (Apr 4–18)
+  :PROPERTIES:
+  :TRACK: hegel-guile
+  :DEADLINE: <2026-04-18>
+  :END:
+
+** TODO Wire hegel-guile against live hegel-core
+   Run ~examples/basic.scm~ against real server, not unit tests only.
+
+   #+begin_src sh
+   pip install hegel-core  # or: uv tool install hegel-core
+   guile -L src examples/basic.scm
+   #+end_src
+
+   *Expected failures to fix first:*
+   - Socket path handshake in ~server.scm~ (depends on C4 outcome)
+   - Any ~msg-finish-test-case~ string mismatch (depends on framing check)
+
+** TODO Fix open conjectures surfaced by live run
+   Patch ~src/hegel/server.scm~, ~src/hegel/protocol.scm~ as needed.
+   Update org source blocks and re-tangle.
+
+** TODO Integration test suite
+   Add ~tests/test-integration.scm~: runs end-to-end with real hegel-core.
+   Gate on ~HEGEL_SERVER_COMMAND~ being set; skip if not.
+
+   #+begin_src scheme :tangle tests/test-integration.scm :mkdirp t
+   ;;; tests/test-integration.scm — end-to-end test (requires hegel-core)
+   (when (not (getenv "HEGEL_SERVER_COMMAND"))
+     (display "SKIP: HEGEL_SERVER_COMMAND not set\n")
+     (exit 0))
+
+   (add-to-load-path (string-append (dirname (current-filename)) "/../src"))
+   (use-modules (hegel) (srfi srfi-64))
+
+   (test-begin "integration")
+
+   (define-hegel-test (it-integer-roundtrip tc #:test-cases 50)
+     (let* ((n (tc-draw tc (integers #:min-value -1000 #:max-value 1000)))
+            (s (number->string n))
+            (n2 (string->number s)))
+       (unless (= n n2)
+         (error "roundtrip failed" n s n2))))
+
+   (let ((failures (run-hegel-tests!)))
+     (test-equal "no failures" 0 failures))
+
+   (test-end "integration")
+   #+end_src
+
+* Phase 2 — stdio Transport + python.wasm (Apr 18 – Jun 14)
+  :PROPERTIES:
+  :TRACK: wasm
+  :DEADLINE: <2026-06-14>
+  :END:
+
+** TODO Patch hegel-core: --transport stdio
+   :PROPERTIES:
+   :TARGET: https://github.com/hegeldev/hegel-core
+   :PR_CANDIDATE: YES
+   :END:
+   Minimal patch: add ~click~ option ~--transport [socket|stdio]~.
+   Replace ~socket.accept()~ with ~sys.stdin.buffer~ / ~sys.stdout.buffer~.
+   CBOR framing unchanged; emit ~"READY\n"~ to stdout instead of socket path.
+
+   CPRR alignment: the blog states dropping Python dep is on the roadmap.
+   A stdio transport is a prerequisite for python.wasm embedding and is
+   independently useful (no ~AF_UNIX~ dependency, works in sandboxed envs).
+
+** TODO Update server.scm: wasmtime spawn
+   :PROPERTIES:
+   :AFFECTS: src/hegel/server.scm
+   :END:
+   Detect ~HEGEL_SERVER_COMMAND~ containing ~wasmtime~ → use stdio pipes
+   (already ~open-input-pipe~ model) instead of Unix socket connect.
+
+   The framing code in ~cbor.scm~ is transport-agnostic — no changes there.
+
+** TODO python.wasm smoke test
+   #+begin_src sh
+   export HEGEL_SERVER_COMMAND="wasmtime run \
+     --dir $(pwd)::/work \
+     --env PYTHONPATH=/work/wasi-site-packages \
+     /path/to/python.wasm -- -m hegel --transport stdio"
+
+   guile -L src examples/basic.scm
+   #+end_src
+
+** DEFERRED AOT compile python.wasm → python.cwasm
+   :PROPERTIES:
+   :BENEFIT: ~800ms → ~100ms cold start
+   :END:
+   #+begin_src sh
+   wasmtime compile python.wasm -o python.cwasm
+   # Run with --allow-precompiled
+   wasmtime run --allow-precompiled --dir .::/ python.cwasm \
+     -- -m hegel --transport stdio
+   #+end_src
+
+* Phase 3 — Polish + SRFI-64 (Jun – Sep 2026)
+  :PROPERTIES:
+  :TRACK: hegel-guile
+  :END:
+
+** TODO SRFI-64 runner integration
+   ~define-hegel-test~ registers with SRFI-64's ~test-begin~ / ~test-end~
+   so hegel tests appear in standard ~.log~ output alongside unit tests.
+   Single ~(run-hegel-tests!)~ call at the end of a SRFI-64 test file.
+
+** TODO Stateful testing (~define-state-machine~)
+   Hypothesis supports stateful testing via ~RuleBasedStateMachine~.
+   Port this to Guile: ~define-state-machine~ macro + CBOR schema for
+   ~state_machine_run~ draw type. Aligns with CPRR / elenctic-spec use.
+
+** TODO Refine SKILL.md after Go/OCaml reference impls land
+   Particularly: ~define-composite~ syntax may want revision after seeing
+   how hegel-ocaml handles composite generators (OCaml has let-binding
+   syntax very similar to Guile's).
+
+** TODO Tag v0.1.0
+   :PROPERTIES:
+   :CONDITION: live integration + stdio transport + SRFI-64 complete
+   :END:
+
+* Phase 4 — Upstream Contribution + Future (Q4 2026+)
+  :PROPERTIES:
+  :TRACK: upstream
+  :END:
+
+** DEFERRED componentize-py WIT interface (Approach B)
+   :PROPERTIES:
+   :SPEC: spec.org::*C6
+   :CONDITION: WASI Preview 2 stable in wasmtime; componentize-py matures
+   :END:
+   Build ~hegel_core.wasm~ as a proper WASI Component with a WIT interface.
+   Client language calls typed functions directly — no IPC, no framing.
+
+   #+begin_src wit
+   // hegel.wit (hypothetical)
+   package hegel:core;
+   interface generator {
+     record schema { type: string, params: list<tuple<string,value>> }
+     draw: func(s: schema) -> value;
+     start-test: func(test-cases: u32) -> unit;
+     finish-test-case: func(status: string) -> unit;
+   }
+   #+end_src
+
+** DEFERRED Bombadil bridge
+   :PROPERTIES:
+   :CONDITION: upstream hegel-core adds async/concurrent test tracking
+   :END:
+   ~(hegel bombadil)~ module: stateful PBT driving distributed scenarios.
+   Aligns with CPRR → ARIA → Gastown pipeline in the Seven Concerns stack.
+
+* CPRR Status Log
+
+| ID | Conjecture | Status | Owner | Date |
+|----|-----------|--------|-------|------|
+| C1 | Pyodide runs in Wasmtime | ❌ REFUTED | spec.org | 2026-03-24 |
+| C2 | hegel-core deps on CPython WASI | 🔲 OPEN | Phase 0 | — |
+| C3 | WASI lacks Unix sockets | ✅ CONFIRMED-BLOCKING | spec.org | 2026-03-24 |
+| C4 | stdio transport viable | 🔲 OPEN | Phase 0 | — |
+| C5 | Hypothesis DB on WASI FS | 🔲 OPEN | Phase 0 | — |
+| C6 | Guile drives python.wasm (Strategy α) | 🔲 OPEN | Phase 2 | — |
+| C7 | CBOR framing is uint32-BE | 🔲 OPEN | Phase 1 | — |
+| C8 | Handshake is client-initiates | 🔲 OPEN | Phase 1 | — |
