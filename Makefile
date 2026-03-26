@@ -9,10 +9,23 @@ TEST_DIR:= tests
 .PHONY: compile test clean tangle
 
 compile:
-	find $(SRC_DIR) -name '*.scm' | xargs -I{} $(GUILD) compile {}
+	$(GUILD) compile -L $(SRC_DIR) \
+	  $(SRC_DIR)/hegel/crc32.scm \
+	  $(SRC_DIR)/hegel/cbor.scm \
+	  $(SRC_DIR)/hegel/packet.scm \
+	  $(SRC_DIR)/hegel/channel.scm \
+	  $(SRC_DIR)/hegel/protocol.scm \
+	  $(SRC_DIR)/hegel/generators.scm \
+	  $(SRC_DIR)/hegel/server.scm \
+	  $(SRC_DIR)/hegel/test-case.scm \
+	  $(SRC_DIR)/hegel/test.scm \
+	  $(SRC_DIR)/hegel.scm
 
 test: compile
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-cbor.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-crc32.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-packet.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-channel.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
 

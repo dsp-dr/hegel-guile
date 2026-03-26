@@ -1,52 +1,54 @@
-;;; hegel/test-case.scm — TestCase record and draw/assume primitives
+;;; hegel/test-case.scm — TestCase record and generate/assume primitives
+;;;
+;;; Each test case operates on a channel. The "generate" command replaces
+;;; the old "draw" command, and "assume" marks a test case as invalid.
 
 (define-module (hegel test-case)
   #:use-module (hegel protocol)
+  #:use-module (hegel channel)
+  #:use-module (srfi srfi-9)
   #:export (make-test-case
+            test-case?
+            test-case-channel
             tc-draw
-            tc-assume
-            test-case-failed?
-            test-case-rejected?))
+            tc-assume))
 
 ;;;; ── Conditions ─────────────────────────────────────────────────────────────
 
-;; We use plain Guile exceptions (throw/catch) for control flow.
 (define %assume-tag 'hegel-assume)
-(define %fail-tag   'hegel-fail)
 
 (define (raise-assume!) (throw %assume-tag))
-(define (raise-fail! msg) (throw %fail-tag msg))
 
 ;;;; ── TestCase record ────────────────────────────────────────────────────────
 
 (define-record-type <test-case>
-  (%make-test-case in-port out-port)
+  (%make-test-case channel)
   test-case?
-  (in-port  test-case-in-port)
-  (out-port test-case-out-port))
+  (channel test-case-channel))
 
-(define (make-test-case in-port out-port)
-  (%make-test-case in-port out-port))
+(define (make-test-case channel)
+  (%make-test-case channel))
 
-;;;; ── Draw ───────────────────────────────────────────────────────────────────
+;;;; ── Generate (was: draw) ───────────────────────────────────────────────────
 
 (define (tc-draw tc schema)
-  "Ask the server to draw a value matching SCHEMA.
-   SCHEMA is an alist; e.g. '((\"type\" . \"integers\") (\"min_value\" . 0))."
-  (send-message! (test-case-out-port tc) (msg-draw schema))
-  (let ((resp (recv-message! (test-case-in-port tc))))
+  "Ask the server to generate a value matching SCHEMA.
+SCHEMA is an alist; e.g. '((\"type\" . \"integers\") (\"min_value\" . 0)).
+Uses the 'generate' command on the test case's channel."
+  (let* ((channel (test-case-channel tc))
+         (resp (channel-send-request! channel (msg-generate schema))))
     (cond
-     ((equal? (response-type resp) "value")
+     ((response-value resp)
       (response-value resp))
-     ((equal? (response-type resp) "error")
-      (error "hegel server error during draw" (response-error resp)))
+     ((response-error resp)
+      (error "hegel server error during generate" (response-error resp)))
      (else
-      (error "hegel unexpected draw response" resp)))))
+      (error "hegel: unexpected generate response" resp)))))
 
 ;;;; ── Assume ─────────────────────────────────────────────────────────────────
 
 (define (tc-assume tc condition)
-  "If CONDITION is false, mark this test case as invalid (filtered)."
+  "If CONDITION is false, send assume command and raise exception."
   (unless condition
-    (send-message! (test-case-out-port tc) (msg-assume))
+    (channel-send-request! (test-case-channel tc) (msg-assume))
     (raise-assume!)))

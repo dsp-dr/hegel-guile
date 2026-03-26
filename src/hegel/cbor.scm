@@ -9,10 +9,8 @@
   #:use-module (srfi srfi-1)
   #:export (cbor-encode
             cbor-decode
-            cbor-encode-to-port
-            cbor-decode-from-port
-            open-hegel-output-port
-            get-hegel-output-bytes))
+            cbor-decode-item
+            bv-append))
 
 ;;;; ── Encoding ────────────────────────────────────────────────────────────────
 
@@ -107,16 +105,6 @@
    (else
     (error "cbor-encode: unsupported type" val))))
 
-(define (cbor-encode-to-port port val)
-  "Write length-prefixed CBOR frame to PORT."
-  (let* ((payload (cbor-encode val))
-         (len     (bytevector-length payload))
-         (header  (make-bytevector 4)))
-    (bytevector-u32-set! header 0 len (endianness big))
-    (put-bytevector port header)
-    (put-bytevector port payload)
-    (force-output port)))
-
 ;;;; ── Decoding ────────────────────────────────────────────────────────────────
 
 (define (read-byte! port)
@@ -210,9 +198,3 @@
   (let ((port (open-bytevector-input-port bv)))
     (cbor-decode-item port)))
 
-(define (cbor-decode-from-port port)
-  "Read one length-prefixed CBOR frame from binary PORT."
-  (let* ((header  (read-bytes! port 4))
-         (len     (bytevector-u32-ref header 0 (endianness big)))
-         (payload (read-bytes! port len)))
-    (cbor-decode payload)))

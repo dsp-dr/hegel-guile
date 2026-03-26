@@ -63,16 +63,12 @@
     (test-equal "schema min_value" 0 (cdr (assoc "min_value" schema)))
     (test-equal "schema max_value" 100 (cdr (assoc "max_value" schema)))))
 
-;;; ── Framed port I/O ──────────────────────────────────────────────────────────
+;;; ── CBOR encode/decode round-trip via bytevector ────────────────────────────
+;;; (Old framed port I/O removed: framing is now in packet.scm)
 
-(let* ((val  (list (cons "type" "ok"))))
-  (call-with-values
-    (lambda () (open-bytevector-output-port))
-    (lambda (out get-bytes)
-      (cbor-encode-to-port out val)
-      (let* ((result-bv (get-bytes))
-             (in        (open-bytevector-input-port result-bv))
-             (decoded   (cbor-decode-from-port in)))
-        (test-equal "framed round-trip" "ok" (cdr (assoc "type" decoded)))))))
+(let* ((val     (list (cons "type" "ok")))
+       (encoded (cbor-encode val))
+       (decoded (cbor-decode encoded)))
+  (test-equal "bytevector round-trip" "ok" (cdr (assoc "type" decoded))))
 
 (test-end "cbor-codec")
