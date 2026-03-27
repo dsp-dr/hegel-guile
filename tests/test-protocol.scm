@@ -150,13 +150,13 @@
 ;;;; ── CBOR round-trip ──────────────────────────────────────────────────────────
 
 (test-group "cbor-encoding"
-  (let* ((msg (msg-generate (list (cons "type" "booleans"))))
+  (let* ((msg (msg-generate (list (cons "type" "boolean"))))
          (encoded (cbor-encode msg))
          (decoded (cbor-decode encoded)))
     (test-equal "round-trip command"
       "generate" (cdr (assoc "command" decoded)))
     (test-equal "round-trip schema type"
-      "booleans" (cdr (assoc "type"
+      "boolean" (cdr (assoc "type"
                              (cdr (assoc "schema" decoded))))))
 
   ;; run_test round-trip — C-12: flat structure with channel_id and test_cases

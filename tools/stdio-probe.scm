@@ -74,7 +74,7 @@
                     (make-hegl-packet tc-ch 1
                       (cbor-encode (list (cons "command" "generate")
                                          (cons "schema"
-                                               (list (cons "type" "integers")))))))
+                                               (list (cons "type" "integer")))))))
                   (let* ((gen-pkt (read-hegl-packet! pipe))
                          (val (decode-payload gen-pkt)))
                     (log "     generated: ~s~%" val))

@@ -52,14 +52,14 @@
 (define sample-msg
   (list (cons "type" "draw")
         (cons "schema"
-              (list (cons "type" "integers")
+              (list (cons "type" "integer")
                     (cons "min_value" 0)
                     (cons "max_value" 100)))))
 
 (let ((decoded (cbor-decode (cbor-encode sample-msg))))
   (test-equal "map type field" "draw" (cdr (assoc "type" decoded)))
   (let ((schema (cdr (assoc "schema" decoded))))
-    (test-equal "schema type" "integers" (cdr (assoc "type" schema)))
+    (test-equal "schema type" "integer" (cdr (assoc "type" schema)))
     (test-equal "schema min_value" 0 (cdr (assoc "min_value" schema)))
     (test-equal "schema max_value" 100 (cdr (assoc "max_value" schema)))))
 

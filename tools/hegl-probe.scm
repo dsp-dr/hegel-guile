@@ -154,7 +154,7 @@ Implements the actual protocol flow discovered from hegel-core 0.2.3 source:
                             (let* ((tc-mid (+ tc-msg-counter 1))
                                    (gen-msg (list (cons "command" "generate")
                                                    (cons "schema"
-                                                         (list (cons "type" "integers")
+                                                         (list (cons "type" "integer")
                                                                (cons "min_value" -100)
                                                                (cons "max_value" 100)))))
                                    (gen-pkt (make-hegl-packet

@@ -232,7 +232,7 @@ For testing, we use a buffer: write to out, read from in."
                (channel (make-hegel-channel 0 reply-in out-port)))
           (let ((result (channel-send-request! channel
                           (list (cons "command" "generate")
-                                (cons "schema" (list (cons "type" "integers")))))))
+                                (cons "schema" (list (cons "type" "integer")))))))
             (test-equal "send-request unwraps result"
               999 (cdr (assoc "value" result)))))))))
 
