@@ -78,5 +78,21 @@ jobs:
       - name: Run unit tests
         run: make test
 
-      - name: Run integration examples
+      - name: "E2E: basic.scm (gate)"
         run: guile-3.0 -L src examples/basic.scm
+
+      - name: "E2E: sicp.scm (aspirational)"
+        continue-on-error: true
+        run: guile-3.0 -L src examples/sicp.scm
+
+      - name: "E2E: ledger.scm (aspirational)"
+        continue-on-error: true
+        run: guile-3.0 -L src examples/ledger.scm
+
+      - name: "E2E: lisp.scm (aspirational)"
+        continue-on-error: true
+        run: guile-3.0 -L src examples/lisp.scm
+
+      - name: "E2E: todo.scm (aspirational)"
+        continue-on-error: true
+        run: guile-3.0 -L src examples/todo.scm

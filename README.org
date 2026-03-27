@@ -2,8 +2,6 @@
 #+AUTHOR: dsp-dr
 #+DESCRIPTION: Hegel protocol client for GNU Guile 3
 
-* hegel-guile
-
 [[https://img.shields.io/badge/status-experimental-orange.svg]] [[https://img.shields.io/badge/hegel%20protocol-0.7-blue.svg]] [[https://img.shields.io/badge/guile-3.x-green.svg]] [[https://img.shields.io/badge/license-Apache--2.0-lightgrey.svg]]
 
 A [[https://www.gnu.org/software/guile/][GNU Guile 3]] client for the [[https://hegel.dev][Hegel]] universal property-based testing protocol.
