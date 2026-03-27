@@ -3,6 +3,8 @@
 (add-to-load-path (string-append (dirname (current-filename)) "/../src"))
 
 (use-modules (hegel server)
+             (hegel mux)
+             (hegel channel)
              (srfi srfi-64)
              (rnrs bytevectors)
              (rnrs io ports))
@@ -44,25 +46,30 @@
 (test-group "hegel-connection record accessors"
 
   ;; Construct a mock connection using the internal constructor.
-  ;; We use placeholder values as stand-ins for the real port/proc objects.
-  (let* ((mock-port (cons 'mock-in 'mock-out))
-         (conn      ((@@ (hegel server) %make-hegel-connection)
-                     mock-port 'mock-proc "1.2.3")))
+  ;; New record: (in-port out-port socket-obj proc mux control-channel server-version channel-counter)
+  (let* ((mock-in  (open-input-file "/dev/null"))
+         (mock-out (open-output-file "/dev/null"))
+         (conn     ((@@ (hegel server) %make-hegel-connection)
+                    mock-in mock-out #f 'mock-proc
+                    'mock-ctl 'mock-mux "0.7" 1)))
 
     (test-assert "hegel-connection? recognises the record"
-      ((@@ (hegel server) hegel-connection?) conn))
+      (hegel-connection? conn))
 
-    (test-equal "hegel-connection-port returns the port pair"
-      mock-port
-      (hegel-connection-port conn))
+    (test-equal "hegel-connection-server-version returns version"
+      "0.7"
+      (hegel-connection-server-version conn))
 
-    (test-equal "hegel-connection-proc returns the proc"
-      'mock-proc
-      ((@@ (hegel server) hegel-connection-proc) conn))
+    (test-equal "hegel-connection-mux returns stored mux"
+      'mock-mux
+      (hegel-connection-mux conn))
 
-    (test-equal "hegel-connection-server-version returns version string"
-      "1.2.3"
-      ((@@ (hegel server) hegel-connection-server-version) conn))))
+    (test-equal "hegel-connection-control-channel returns stored channel"
+      'mock-ctl
+      (hegel-connection-control-channel conn))
+
+    (close-port mock-in)
+    (close-port mock-out)))
 
 ;;;; ── close-hegel-connection! port-closing logic ───────────────────────────
 ;;
@@ -73,16 +80,12 @@
 
 (test-group "close-hegel-connection! port-closing logic"
 
-  (let* ((mock-in   (open-input-file "/dev/null"))
-         (mock-out  (open-output-file "/dev/null"))
-         (port-pair (cons mock-in mock-out)))
-
-    ;; Exercise the same port-closing steps as close-hegel-connection!:
-    ;;   (close-port (car port))
-    ;;   (close-port (cdr port))
-    (close-port (car port-pair))
-    (close-port (cdr port-pair))
-
+  ;; close-hegel-connection! closes in-port, out-port, and close-pipe on proc.
+  ;; We just verify port closing works.
+  (let* ((mock-in  (open-input-file "/dev/null"))
+         (mock-out (open-output-file "/dev/null")))
+    (close-port mock-in)
+    (close-port mock-out)
     (test-assert "in-port is closed after close-port"
       (port-closed? mock-in))
     (test-assert "out-port is closed after close-port"

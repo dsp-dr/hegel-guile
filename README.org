@@ -4,9 +4,16 @@
 
 * hegel-guile
 
+[[https://img.shields.io/badge/status-experimental-orange.svg]] [[https://img.shields.io/badge/hegel%20protocol-0.7-blue.svg]] [[https://img.shields.io/badge/guile-3.x-green.svg]] [[https://img.shields.io/badge/license-Apache--2.0-lightgrey.svg]]
+
 A [[https://www.gnu.org/software/guile/][GNU Guile 3]] client for the [[https://hegel.dev][Hegel]] universal property-based testing protocol.
 
 Hegel separates the testing engine ([[https://hypothesis.readthedocs.io/][Hypothesis]], running as =hegel-core=) from the language client. This library implements the HEGL wire protocol so you can write property-based tests in Guile while Hypothesis handles generation, shrinking, and search.
+
+hegel-guile version tracks the Hegel protocol version: =0.7.x= for
+protocol 0.7. Patch bumps (0.7.1 -> 0.7.2) are hegel-guile fixes.
+A protocol bump from hegel-core (0.7 -> 0.8) triggers a full
+spec/compliance rebuild and a minor version bump here.
 
 ** Requirements
 
@@ -140,4 +147,4 @@ See [[file:conjectures.org][conjectures.org]] for the full research and adversar
 
 ** License
 
-TBD
+Apache-2.0. See [[file:LICENSE][LICENSE]].
