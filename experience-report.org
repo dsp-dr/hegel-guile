@@ -1,0 +1,284 @@
+#+TITLE: Experience Report: Building hegel-guile with CPRR and Multi-Agent Verification
+#+DATE: 2026-03-26
+#+STARTUP: overview
+
+* Abstract
+
+This report documents the approach taken to build hegel-guile, a Guile 3
+client for the Hegel universal property-based testing protocol. The
+project used a Conjecture-Predict-Refute-Revise (CPRR) methodology,
+multi-agent adversarial review, live wire protocol probing, and
+competing implementations in isolated worktrees to converge on a
+correct implementation.
+
+The most significant finding: the project's initial protocol
+assumptions were wrong in every detail. CPRR surfaced this before
+significant code was invested in the wrong direction.
+
+* Timeline
+
+| Date | Event | Impact |
+|------|-------|--------|
+| 2026-03-24 | Initial EVV against hegel-core 0.2.2 | C-001 through C-004 refuted |
+| 2026-03-25 | Roadmap + conjecture research (16 agents) | C1-C8 assessed |
+| 2026-03-25 | Protocol rewrite: crc32, packet, channel | 142 tests |
+| 2026-03-26 | Live probe against hegel-core 0.2.3 | C9 partially confirmed, 5 new gaps |
+| 2026-03-26 | C10-C15 gap resolution (5 parallel agents) | 248 tests |
+| 2026-03-26 | C14 three-way competing implementation | In progress |
+
+* Phase 1: Conjecture Research (16 Agents)
+
+** Method
+
+For each of 8 conjectures (C1-C8), launched two agents in parallel:
+- A /researcher/ agent: deep context, web research, source analysis
+- An /adversary/ agent: attempt to refute or challenge the status
+
+16 agents total, all running concurrently.
+
+** Key Findings
+
+The adversarial approach was highly effective. Findings that would
+not have emerged from pure research:
+
+- *C6 adversarial* calculated that the WASM strategy depends on a
+  conjunction of 4 open conjectures with joint probability < 0.25,
+  and argued the value proposition is incoherent (replaces 1 dep
+  with 5 for an audience that already has Python)
+
+- *C4 adversarial* identified 7 specific attack surfaces for stdio
+  transport, 2 at HIGH severity (stdout pollution, startup sync),
+  that the roadmap did not address
+
+- *C5 adversarial* discovered the roadmap's test was measuring the
+  wrong thing entirely (SQLite vs Hypothesis's actual flat-file DB)
+
+- *C7/C8 researchers* independently read hegel-rust source and
+  confirmed the HEGL packet format, providing the ground truth that
+  the entire protocol stack needed rewriting
+
+** Cost
+
+16 agents consumed approximately 850K tokens total across ~45 minutes
+of wall time. The adversarial findings prevented investing weeks in
+the WASM track (C6) and identified the correct framing format before
+any integration code was written.
+
+* Phase 2: Bottom-Up Protocol Rewrite
+
+** Method
+
+Used the implementation plan from the conjecture research to rebuild
+the protocol stack in dependency order:
+
+#+begin_example
+Tier 0: crc32.scm (pure Scheme CRC32, no deps)
+Tier 1: packet.scm (HEGL framing, depends on crc32 + cbor)
+Tier 2: channel.scm + protocol.scm (parallel, independent)
+Tier 3: server.scm + test-case.scm (depend on channel)
+Tier 4: test.scm (depends on everything)
+#+end_example
+
+Each tier was implemented, tested, and verified before proceeding.
+The Makefile was updated with ordered compilation.
+
+** Confirmation Gate
+
+Per CLAUDE.md, before writing code, output:
+1. Which build step
+2. What the acceptance test is
+3. What files will be created/modified
+
+This prevented scope creep and kept each tier focused.
+
+** Result
+
+142 tests across 6 suites, all passing. Clean compilation with
+zero warnings. Module dependency boundaries verified.
+
+* Phase 3: Live Protocol Probe (C9)
+
+** Method
+
+Instead of writing integration code and hoping it works, built
+probe tools that exercise the actual wire protocol step by step:
+
+- ~tools/stdio-probe.scm~: exercises hegel-core via --stdio mode
+- ~tools/hegl-probe.scm~: exercises via Unix socket + optional socat
+
+The probe sends real HEGL packets and prints every response,
+letting us observe the actual protocol behavior without any
+abstraction layers.
+
+** Key Discovery
+
+The probe surfaced 5 protocol gaps (C10-C15) that no amount of
+source reading had revealed:
+
+| Gap | How Discovered |
+|-----|---------------|
+| Reply envelope format | Server crashed on bare CBOR reply |
+| Packet multiplexing | channel-recv-reply! read wrong channel's packet |
+| run_test needs channel_id | Server KeyError on missing field |
+| UPPERCASE status strings | Would have caused KeyError at mark_complete |
+| Schema type vocabulary | Server returned "Unsupported schema" |
+
+The probe also confirmed that hegel-core 0.2.3 ships ~--stdio~ natively,
+eliminating the need for an upstream patch (C4 confirmed for free).
+
+** Lesson
+
+Live probing against the real server is worth more than any amount
+of source reading. The source tells you what the code does; the
+probe tells you what actually happens on the wire.
+
+* Phase 4: Gap Resolution (5 Parallel Agents)
+
+** Method
+
+Launched 5 builder agents in parallel, one per gap:
+
+| Agent | Conjecture | Files Modified |
+|-------|-----------|---------------|
+| C10 | Reply envelope | channel.scm, test-channel.scm |
+| C11 | Packet mux | NEW mux.scm, channel.scm, test-mux.scm |
+| C12 | run_test format | protocol.scm, test-protocol.scm |
+| C13 | Status strings | protocol.scm, test.scm, test-protocol.scm |
+| C15 | Schema vocab | generators.scm, test-generators.scm |
+
+All five agents worked on different files, so their changes were
+mergeable without conflicts.
+
+** Contract Enforcement
+
+After agents completed, ran a contract audit verifying:
+- Module layering (no upward dependencies)
+- Reply envelope format (C10: all replies use {"result": v})
+- Status strings (C13: UPPERCASE only)
+- Schema types (C15: singular forms)
+
+The audit caught zero violations. The agents respected their
+domain boundaries because the prompts were scoped precisely.
+
+** Result
+
+248 tests across 7 suites, zero failures.
+
+* Phase 5: Competing Implementations (C14)
+
+** Method
+
+For the most architecturally significant remaining work (server-driven
+test loop, C14), launched three competing implementations in isolated
+git worktrees:
+
+| Branch | Approach |
+|--------|----------|
+| c14/alpha | Recursive event loop (tail-recursive dispatch) |
+| c14/beta | Explicit state machine (state + event pairs) |
+| c14/gamma | Continuation/callback (driver + handler separation) |
+
+Plus the existing approach A already on main.
+
+A comparison agent will diff all four implementations, and a judge
+agent will select the best based on:
+- Correctness (does it match the protocol?)
+- Simplicity (line count, nesting depth)
+- Idiomaticity (does it feel like Guile?)
+- Extensibility (can it handle future protocol changes?)
+
+** Rationale
+
+C14 is the integration point where all the protocol work meets the
+test runner. Getting it wrong means silent protocol mismatches that
+only surface against a live server. The three-way comparison ensures
+we consider multiple valid approaches before committing.
+
+* Methodology: CPRR in Practice
+
+** What Worked
+
+- *Conjectures as first-class objects*: Numbering, tracking in beads,
+  and having explicit falsification criteria for each conjecture made
+  the work auditable. When C7 was refuted, the impact was immediately
+  clear (everything above the framing layer needed rewriting).
+
+- *Adversarial agents*: The adversary for C6 produced the most valuable
+  finding of the entire project: "the WASM track is an 8-week
+  investment in solving a problem that does not exist for the target
+  audience." This is the kind of strategic insight that pure
+  implementation work never surfaces.
+
+- *Live probing before integration*: The probe tools caught 5 gaps
+  that would have been painful debugging sessions if discovered during
+  integration testing.
+
+- *Bottom-up build order with acceptance tests*: Each tier had a
+  clear acceptance test. Failures were caught at the tier they
+  occurred, not propagated upward.
+
+- *Parallel agents with scoped prompts*: The 5 C10-C15 agents worked
+  in parallel because each had a precisely scoped prompt with explicit
+  file boundaries. No conflicts, no contract violations.
+
+** What Didn't Work
+
+- *Agent output extraction*: The initial 16-agent run produced massive
+  JSON conversation logs. Extracting the actual report text required
+  custom Python scripts to parse the JSONL format. A structured
+  output mechanism would have saved time.
+
+- *Numbering collision*: spec.org used C1-C4 for protocol conjectures;
+  roadmap.org renumbered to C1-C8 for a broader scope. This caused
+  confusion in agent prompts. A single authoritative numbering should
+  have been established upfront.
+
+- *Some agents timed out*: Of the 16 initial agents, several (C2, C3,
+  C5, C6, C7, C8 research agents) were mid-research when they hit
+  context limits. The adversarial agents, which had more focused
+  prompts, completed more reliably.
+
+** Cost-Benefit
+
+| Phase | Agents | Tokens | Tests Added | Bugs Found |
+|-------|--------|--------|-------------|------------|
+| Research | 16 | ~850K | 0 | 8 conjectures assessed |
+| Rewrite | 0 (manual) | ~50K | 142 | 0 (built from ground truth) |
+| Probe | 0 (manual) | ~20K | 0 | 5 protocol gaps |
+| Gap fix | 5 | ~200K | 106 | 0 (built from probe evidence) |
+| C14 | 3+2 | ~300K | TBD | TBD |
+| *Total* | *~26* | *~1.4M* | *248+* | *13+ issues* |
+
+The research phase was the highest token cost but arguably the
+highest value: it prevented the WASM track (estimated 8 weeks of
+wasted work) and identified the correct wire protocol before any
+integration code was written.
+
+* Artifacts
+
+| File | Purpose |
+|------|---------|
+| roadmap.org | 4-phase plan with CPRR status log |
+| conjectures.org | Deep research + adversarial review (C1-C9) |
+| conjectures-c10-c15.org | Implementation gap conjectures |
+| .beads/issues.jsonl | 14 tracked issues with status |
+| tools/stdio-probe.scm | Live wire protocol probe (--stdio) |
+| tools/hegl-probe.scm | Live probe (socket + socat proxy) |
+| src/hegel/crc32.scm | Pure Scheme CRC32 |
+| src/hegel/packet.scm | HEGL packet framing |
+| src/hegel/mux.scm | Packet multiplexer |
+| src/hegel/channel.scm | Multiplexed channel abstraction |
+
+* Open Questions
+
+1. Does the server-driven event loop (C14) handle shrinking correctly?
+   During shrinking, Hypothesis replays failing examples with
+   ~is_final: true~. The test thunk must produce the same behavior.
+
+2. What happens when the server sends multiple test_case events
+   concurrently? The current mux buffers per-channel, but the
+   test runner processes events sequentially. Would concurrent
+   execution improve shrinking performance?
+
+3. Should hegel-guile support the ~--stdio~ transport natively
+   (bypassing socket setup) for simpler CI integration?
