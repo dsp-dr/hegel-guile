@@ -14,6 +14,7 @@ compile:
 	  $(SRC_DIR)/hegel/cbor.scm \
 	  $(SRC_DIR)/hegel/packet.scm \
 	  $(SRC_DIR)/hegel/channel.scm \
+	  $(SRC_DIR)/hegel/mux.scm \
 	  $(SRC_DIR)/hegel/protocol.scm \
 	  $(SRC_DIR)/hegel/generators.scm \
 	  $(SRC_DIR)/hegel/server.scm \
@@ -28,6 +29,7 @@ test: compile
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-channel.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-mux.scm
 
 tangle:
 	emacs --batch --eval \

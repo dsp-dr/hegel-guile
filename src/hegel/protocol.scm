@@ -14,6 +14,10 @@
             %handshake-string
             %supported-protocol-versions
             parse-server-version
+            ;; Status constants (match Python Status enum names)
+            %status-valid
+            %status-invalid
+            %status-interesting
             ;; Command constructors (client -> server, CBOR payloads)
             msg-run-test
             msg-generate
@@ -54,28 +58,48 @@ Returns the version as a number. Raises on invalid format or unsupported version
                %supported-protocol-versions))
       version)))
 
+;;;; ── Status constants ───────────────────────────────────────────────────────
+;;; hegel-core uses Python Status enum names (UPPERCASE, case-sensitive).
+;;; The server does Status[message["status"]] — wrong case = KeyError.
+
+(define %status-valid "VALID")
+(define %status-invalid "INVALID")
+(define %status-interesting "INTERESTING")
+
 ;;;; ── Command constructors ─────────────────────────────────────────────────────
 
-(define (msg-run-test . opts)
-  "Construct a run_test command. Keyword opts: #:test-cases, #:database."
+(define (msg-run-test channel-id test-cases . opts)
+  "Construct a run_test command.
+CHANNEL-ID is the client-created test channel ID (integer).
+TEST-CASES is the number of test cases to run (integer).
+Optional keyword args: #:database, #:database-key, #:seed,
+  #:suppress-health-check, #:derandomize.
+
+Per hegel-core run_server_on_connection(), run_test must have channel_id
+and test_cases at the top level (not nested in settings).  See conjecture C-12."
   (let loop ((opts opts)
-             (settings '())
              (extra '()))
     (cond
      ((null? opts)
-      (let ((msg (alist (cons "command" "run_test"))))
-        (if (null? settings)
-            msg
-            (append msg (list (cons "settings" (reverse settings)))
-                    (reverse extra)))))
-     ((eq? (car opts) #:test-cases)
-      (loop (cddr opts)
-            (cons (cons "max_examples" (cadr opts)) settings)
-            extra))
+      (append (list (cons "command" "run_test")
+                    (cons "channel_id" channel-id)
+                    (cons "test_cases" test-cases))
+              (reverse extra)))
      ((eq? (car opts) #:database)
       (loop (cddr opts)
-            settings
             (cons (cons "database" (cadr opts)) extra)))
+     ((eq? (car opts) #:database-key)
+      (loop (cddr opts)
+            (cons (cons "database_key" (cadr opts)) extra)))
+     ((eq? (car opts) #:seed)
+      (loop (cddr opts)
+            (cons (cons "seed" (cadr opts)) extra)))
+     ((eq? (car opts) #:suppress-health-check)
+      (loop (cddr opts)
+            (cons (cons "suppress_health_check" (cadr opts)) extra)))
+     ((eq? (car opts) #:derandomize)
+      (loop (cddr opts)
+            (cons (cons "derandomize" (cadr opts)) extra)))
      (else
       (error "msg-run-test: unknown keyword" (car opts))))))
 
@@ -90,7 +114,8 @@ Returns the version as a number. Raises on invalid format or unsupported version
 
 (define (msg-mark-complete status)
   "Construct a mark_complete command.
-STATUS is a string: \"interesting\" | \"valid\" | \"invalid\"."
+STATUS is a string: \"VALID\" | \"INVALID\" | \"INTERESTING\".
+Must match Python Status enum names exactly (case-sensitive)."
   (alist (cons "command" "mark_complete")
          (cons "status" status)))
 

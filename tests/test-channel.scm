@@ -115,4 +115,125 @@ For testing, we use a buffer: write to out, read from in."
         (test-equal "cbor test_cases"
           100 (cdr (assoc "test_cases" decoded)))))))
 
+;;;; ── C-010: reply envelope {result: ...} / {error: ...} ─────────────────────
+
+(test-group "c010-write-reply"
+  ;; channel-write-reply! should produce a packet with reply bit set
+  ;; and payload = CBOR-encoded {"result": value}
+  (let-values (((out-port get-bv) (open-bytevector-output-port)))
+    (let* ((dummy-in (open-bytevector-input-port (make-bytevector 0)))
+           (channel (make-hegel-channel 0 dummy-in out-port)))
+      (channel-write-reply! channel 1 42)
+      (let* ((wire (get-bv))
+             (pkt (read-hegl-packet! (open-bytevector-input-port wire))))
+        (test-assert "reply bit is set"
+          (hegl-packet-is-reply? pkt))
+        (test-equal "message-id has reply bit for msg 1"
+          (logior 1 %reply-bit)
+          (hegl-packet-message-id pkt))
+        (let ((decoded (cbor-decode (hegl-packet-payload pkt))))
+          (test-equal "payload is {\"result\": 42}"
+            42 (cdr (assoc "result" decoded))))))))
+
+(test-group "c010-write-reply-error"
+  ;; channel-write-reply-error! should produce {error: msg, type: name}
+  (let-values (((out-port get-bv) (open-bytevector-output-port)))
+    (let* ((dummy-in (open-bytevector-input-port (make-bytevector 0)))
+           (channel (make-hegel-channel 0 dummy-in out-port)))
+      (channel-write-reply-error! channel 3 "something broke" "ValueError")
+      (let* ((wire (get-bv))
+             (pkt (read-hegl-packet! (open-bytevector-input-port wire))))
+        (test-assert "error reply bit is set"
+          (hegl-packet-is-reply? pkt))
+        (let ((decoded (cbor-decode (hegl-packet-payload pkt))))
+          (test-equal "error message"
+            "something broke" (cdr (assoc "error" decoded)))
+          (test-equal "error type"
+            "ValueError" (cdr (assoc "type" decoded))))))))
+
+(test-group "c010-recv-unwrap-result"
+  ;; channel-recv-cbor! should unwrap {"result": value} and return value
+  (let-values (((reply-out get-reply) (open-bytevector-output-port)))
+    (let ((reply-payload (cbor-encode (list (cons "result" "hello")))))
+      (write-hegl-packet! reply-out
+                          (make-hegl-packet 0
+                                            (logior 1 %reply-bit)
+                                            reply-payload))
+      (let* ((reply-bv (get-reply))
+             (reply-in (open-bytevector-input-port reply-bv))
+             (channel (make-hegel-channel 0 reply-in #f)))
+        (test-equal "unwraps result value"
+          "hello"
+          (channel-recv-cbor! channel 1))))))
+
+(test-group "c010-recv-unwrap-result-alist"
+  ;; When result is itself an alist, it should be returned as-is
+  (let-values (((reply-out get-reply) (open-bytevector-output-port)))
+    (let* ((inner-value (list (cons "event" "test_case") (cons "id" 7)))
+           (reply-payload (cbor-encode (list (cons "result" inner-value)))))
+      (write-hegl-packet! reply-out
+                          (make-hegl-packet 0
+                                            (logior 2 %reply-bit)
+                                            reply-payload))
+      (let* ((reply-bv (get-reply))
+             (reply-in (open-bytevector-input-port reply-bv))
+             (channel (make-hegel-channel 0 reply-in #f)))
+        (let ((val (channel-recv-cbor! channel 2)))
+          (test-equal "unwrapped alist event"
+            "test_case" (cdr (assoc "event" val)))
+          (test-equal "unwrapped alist id"
+            7 (cdr (assoc "id" val))))))))
+
+(test-group "c010-recv-error-raises"
+  ;; channel-recv-cbor! should raise on {"error": msg, "type": name}
+  (let-values (((reply-out get-reply) (open-bytevector-output-port)))
+    (let ((reply-payload (cbor-encode (list (cons "error" "bad schema")
+                                            (cons "type" "InvalidArgument")))))
+      (write-hegl-packet! reply-out
+                          (make-hegl-packet 0
+                                            (logior 1 %reply-bit)
+                                            reply-payload))
+      (let* ((reply-bv (get-reply))
+             (reply-in (open-bytevector-input-port reply-bv))
+             (channel (make-hegel-channel 0 reply-in #f)))
+        (test-error "error reply raises"
+          #t
+          (channel-recv-cbor! channel 1))))))
+
+(test-group "c010-recv-bare-value-raises"
+  ;; Bare CBOR value (not a map) should raise a C-010 violation
+  (let-values (((reply-out get-reply) (open-bytevector-output-port)))
+    (let ((reply-payload (cbor-encode 42)))
+      (write-hegl-packet! reply-out
+                          (make-hegl-packet 0
+                                            (logior 1 %reply-bit)
+                                            reply-payload))
+      (let* ((reply-bv (get-reply))
+             (reply-in (open-bytevector-input-port reply-bv))
+             (channel (make-hegel-channel 0 reply-in #f)))
+        (test-error "bare CBOR value raises C-010 violation"
+          #t
+          (channel-recv-cbor! channel 1))))))
+
+(test-group "c010-send-request-unwraps"
+  ;; channel-send-request! should round-trip through the envelope
+  ;; We simulate: send request, then receive a {"result": ...} reply
+  (let-values (((out-port get-sent) (open-bytevector-output-port)))
+    (let-values (((reply-out get-reply) (open-bytevector-output-port)))
+      ;; Pre-build the reply for msg-id 1
+      (let ((reply-payload (cbor-encode (list (cons "result"
+                                                    (list (cons "value" 999)))))))
+        (write-hegl-packet! reply-out
+                            (make-hegl-packet 0
+                                              (logior 1 %reply-bit)
+                                              reply-payload))
+        (let* ((reply-bv (get-reply))
+               (reply-in (open-bytevector-input-port reply-bv))
+               (channel (make-hegel-channel 0 reply-in out-port)))
+          (let ((result (channel-send-request! channel
+                          (list (cons "command" "generate")
+                                (cons "schema" (list (cons "type" "integers")))))))
+            (test-equal "send-request unwraps result"
+              999 (cdr (assoc "value" result)))))))))
+
 (test-end "channel")

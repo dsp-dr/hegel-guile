@@ -90,22 +90,21 @@
       (let loop ((i 0) (failures 0))
         (if (= i test-cases)
             (= failures 0)
-            (let ((result
+            (let ((status
                    (catch #t
                      (lambda ()
                        (thunk tc)
-                       'valid)
+                       %status-valid)
                      (lambda (tag . args)
                        (cond
-                        ((eq? tag 'hegel-assume) 'invalid)
-                        (else 'interesting))))))
+                        ((eq? tag 'hegel-assume) %status-invalid)
+                        (else %status-interesting))))))
               ;; Report result to server
               (let ((mark-resp
                      (channel-send-request! test-channel
-                                            (msg-mark-complete
-                                             (symbol->string result)))))
+                                            (msg-mark-complete status))))
                 (loop (+ i 1)
-                      (if (eq? result 'interesting)
+                      (if (string=? status %status-interesting)
                           (+ failures 1)
                           failures)))))))))
 
