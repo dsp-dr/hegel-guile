@@ -1,14 +1,16 @@
 ;;; hegel/server.scm — Lifecycle: spawn hegel-core, connect, handshake
 ;;;
-;;; The actual protocol (hegel-core 0.2.2):
+;;; The actual protocol (hegel-core 0.2.3):
 ;;;   - Client creates socket path, passes as CLI argument
 ;;;   - Handshake: raw bytes "hegel_handshake_start" on channel 0
 ;;;   - Server replies with raw bytes "Hegel/{version}"
 ;;;   - All subsequent communication uses HEGL packet framing
+;;;   - Post-handshake traffic is multiplexed across channels (C-011)
 
 (define-module (hegel server)
   #:use-module (hegel protocol)
   #:use-module (hegel channel)
+  #:use-module (hegel mux)
   #:use-module (hegel packet)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
@@ -19,10 +21,12 @@
   #:export (make-hegel-connection
             hegel-connection?
             hegel-connection-control-channel
+            hegel-connection-mux
             hegel-connection-in-port
             hegel-connection-out-port
             hegel-connection-server-version
             hegel-connection-next-test-channel!
+            hegel-connection-next-test-channel-id!
             close-hegel-connection!))
 
 (define %client-name "hegel-guile")
@@ -31,24 +35,33 @@
 
 (define-record-type <hegel-connection>
   (%make-hegel-connection in-port out-port socket-obj proc
-                          control-channel server-version channel-counter)
+                          mux control-channel server-version channel-counter)
   hegel-connection?
   (in-port         hegel-connection-in-port)
   (out-port        hegel-connection-out-port)
   (socket-obj      hegel-connection-socket-obj)
   (proc            hegel-connection-proc)
+  (mux             hegel-connection-mux)
   (control-channel hegel-connection-control-channel)
   (server-version  hegel-connection-server-version)
   (channel-counter hegel-connection-channel-counter
                    set-hegel-connection-channel-counter!))
 
+(define (hegel-connection-next-test-channel-id! conn)
+  "Allocate and return the next client test channel ID (odd integer).
+Does NOT create a channel object — use this when you need just the ID
+for run_test's channel_id field."
+  (let* ((n (hegel-connection-channel-counter conn))
+         (channel-id (make-client-channel-id n)))
+    (set-hegel-connection-channel-counter! conn (+ n 1))
+    channel-id))
+
 (define (hegel-connection-next-test-channel! conn)
-  "Allocate and return a new test-case channel on this connection."
+  "Allocate and return a new muxed test channel on this connection."
   (let* ((n (hegel-connection-channel-counter conn))
          (channel-id (make-client-channel-id n))
-         (channel (make-hegel-channel channel-id
-                                      (hegel-connection-in-port conn)
-                                      (hegel-connection-out-port conn))))
+         (mux (hegel-connection-mux conn))
+         (channel (make-muxed-channel channel-id mux)))
     (set-hegel-connection-channel-counter! conn (+ n 1))
     channel))
 
@@ -113,22 +126,29 @@ Returns the server version number."
 
 (define (make-hegel-connection)
   "Spawn hegel-core, connect to its Unix socket, perform handshake.
-Returns a <hegel-connection>."
+Returns a <hegel-connection> with a connection-mux for multiplexed traffic.
+
+Handshake is performed on a direct channel (only channel 0 exists).
+After handshake, a connection-mux is created and the control channel is
+upgraded to a muxed channel for all subsequent communication."
   (let* ((cmd         (find-hegel-command))
          (socket-path (make-socket-path))
          (proc        (spawn-server cmd socket-path)))
     ;; Wait for server to create the socket file
     (wait-for-socket socket-path 10000)
     (let-values (((in-port out-port sock) (connect-unix-socket socket-path)))
-      ;; Create control channel (channel 0)
-      (let* ((control (make-hegel-channel 0 in-port out-port))
-             (version (perform-handshake control)))
+      ;; Handshake on a direct channel (no interleaving yet)
+      (let* ((direct-control (make-hegel-channel 0 in-port out-port))
+             (version (perform-handshake direct-control)))
         ;; Clean up socket file
         (catch #t
           (lambda () (delete-file socket-path))
           (lambda _ #f))
-        (%make-hegel-connection in-port out-port sock proc
-                                control version 1)))))
+        ;; Create mux for all post-handshake multiplexed traffic
+        (let* ((mux (make-connection-mux in-port out-port))
+               (muxed-control (make-muxed-channel 0 mux)))
+          (%make-hegel-connection in-port out-port sock proc
+                                  mux muxed-control version 1))))))
 
 (define (close-hegel-connection! conn)
   "Close the connection and terminate the server process."
