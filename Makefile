@@ -30,6 +30,7 @@ test: compile
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
 	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-mux.scm
+	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-test.scm
 
 tangle:
 	emacs --batch --eval \

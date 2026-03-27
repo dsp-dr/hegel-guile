@@ -1,8 +1,7 @@
 ;;; hegel/test-case.scm — TestCase record and generate/assume primitives
 ;;;
-;;; Each test case operates on a channel. The server creates even-numbered
-;;; channels for each test case (C-014). The client creates a muxed channel
-;;; for the server-assigned channel-id and uses it for generate/mark_complete.
+;;; Each test case operates on a channel. The "generate" command replaces
+;;; the old "draw" command, and "assume" marks a test case as invalid.
 
 (define-module (hegel test-case)
   #:use-module (hegel protocol)
@@ -30,14 +29,12 @@
   (channel test-case-channel))
 
 (define (make-test-case channel)
-  "Create a test case bound to an existing channel object."
   (%make-test-case channel))
 
 (define (make-test-case-on-mux mux channel-id)
-  "Create a test case for a server-assigned CHANNEL-ID via the connection MUX.
-The server creates even-numbered channel IDs for each test case (C-014).
-A muxed channel is created internally so generate/mark_complete traffic
-on this channel is properly demultiplexed."
+  "Create a test case backed by a muxed channel for CHANNEL-ID.
+Used in server-driven lifecycle (C-014): the server assigns the test_case
+channel ID, and the client wraps it in a muxed channel for generate/assume."
   (%make-test-case (make-muxed-channel channel-id mux)))
 
 ;;;; ── Generate (was: draw) ───────────────────────────────────────────────────
@@ -54,10 +51,7 @@ Uses the 'generate' command on the test case's channel."
      ((response-error resp)
       (error "hegel server error during generate" (response-error resp)))
      (else
-      ;; The result might be a plain value (integer, boolean, etc.)
-      ;; channel-send-request! already unwraps the {"result": v} envelope,
-      ;; so resp IS the value. Return it directly.
-      resp))))
+      (error "hegel: unexpected generate response" resp)))))
 
 ;;;; ── Assume ─────────────────────────────────────────────────────────────────
 

@@ -1,18 +1,16 @@
 ;;; hegel/test.scm — Test runner and define-hegel-test macro
 ;;;
-;;; Implements conjecture C-014: server-driven test case lifecycle.
+;;; C-014: Server-driven test case lifecycle (hegel-core 0.2.3)
 ;;;
-;;; The hegel-core 0.2.3 protocol flow:
-;;;   1. Client sends run_test on control channel (ch 0) with channel_id=N
-;;;   2. Server replies {result: true} on control channel
-;;;   3. Server sends {event: "test_case", channel_id: K} as REQUEST on ch N
-;;;      (K is a server-created even channel for this specific test case)
-;;;   4. Client replies {result: null} to acknowledge
-;;;   5. Client sends generate commands on ch K
-;;;   6. Client sends mark_complete on ch K
-;;;   7. Server repeats 3-6 (Hypothesis decides how many)
-;;;   8. Server sends {event: "test_done", results: {...}} on ch N
-;;;   9. Client replies {result: null} to acknowledge
+;;; Protocol flow:
+;;;   1. Client sends run_test on control channel (ch 0)
+;;;   2. Server acks with {"result": true}
+;;;   3. Server sends {"event": "test_case", "channel_id": N} requests
+;;;   4. Client acks each test_case, runs thunk, sends mark_complete
+;;;   5. Server sends {"event": "test_done", "results": {...}} when finished
+;;;
+;;; The test runner is a tail-recursive event loop over the test channel.
+;;; No explicit state machine — the recursion IS the state.
 
 (define-module (hegel test)
   #:use-module (hegel server)
@@ -28,8 +26,10 @@
   #:export (define-hegel-test
             hegel-test
             run-hegel-tests!
-            tc-draw
-            tc-assume))
+            run-single-test!
+            execute-test-case!)
+  #:re-export (tc-draw
+               tc-assume))
 
 ;;;; ── Test registry ─────────────────────────────────────────────────────────
 
@@ -83,74 +83,68 @@
      (else
       (tc-draw tc schema)))))
 
-;;;; ── Single test case execution ────────────────────────────────────────────
+;;;; ── Test case execution helper ──────────────────────────────────────────
 
-(define (run-test-case! mux test-case-channel-id thunk)
-  "Execute THUNK for a single test case on the server-created channel.
-TEST-CASE-CHANNEL-ID is the even-numbered channel the server assigned.
-Returns the status string sent to mark_complete."
-  (let* ((tc (make-test-case-on-mux mux test-case-channel-id))
-         (tc-channel (test-case-channel tc)))
-    ;; Run the user's test function, catching exceptions
-    (let ((status
-           (catch #t
-             (lambda ()
-               (thunk tc)
-               %status-valid)
-             (lambda (tag . args)
-               (cond
-                ((eq? tag 'hegel-assume) %status-invalid)
-                (else %status-interesting))))))
-      ;; Report result to server on the test-case channel
-      (channel-send-request! tc-channel (msg-mark-complete status))
-      status)))
+(define (execute-test-case! mux event-msg thunk)
+  "Execute THUNK for a single test case described by EVENT-MSG.
+Creates a muxed channel for the server-assigned channel_id, runs THUNK
+with generate/assume on that channel, sends mark_complete.
+Returns the status string (VALID/INVALID/INTERESTING)."
+  (let* ((test-case-channel-id (response-field event-msg "channel_id"))
+         (tc (make-test-case-on-mux mux test-case-channel-id))
+         (status (catch #t
+                   (lambda ()
+                     (thunk tc)
+                     %status-valid)
+                   (lambda (tag . args)
+                     (if (eq? tag 'hegel-assume)
+                         %status-invalid
+                         %status-interesting)))))
+    ;; Send mark_complete on the test_case channel
+    (channel-send-request! (test-case-channel tc)
+                           (msg-mark-complete status))
+    status))
 
-;;;; ── Server-driven event loop (C-014) ──────────────────────────────────────
+;;;; ── Single test execution (C-014: server-driven event loop) ─────────────
 
 (define (run-single-test! conn thunk test-cases)
   "Run THUNK against hegel-core using CONN. Returns #t if all cases passed.
 
-The server drives test case iteration:
-  - Sends 'test_case' events (requests) on the test channel
-  - Client acknowledges each, runs thunk, sends mark_complete
-  - Server sends 'test_done' when Hypothesis is done"
-  (let* ((control (hegel-connection-control-channel conn))
-         (mux     (hegel-connection-mux conn))
-         ;; Allocate a client test channel ID for this test run
+The server drives the test case lifecycle:
+  - Sends 'test_case' events with a channel_id for generate/assume
+  - Sends 'test_done' event when Hypothesis is finished
+The client loops over these events in tail position."
+  (let* ((mux (hegel-connection-mux conn))
+         (control (hegel-connection-control-channel conn))
          (test-channel-id (hegel-connection-next-test-channel-id! conn))
-         (test-channel    (make-muxed-channel test-channel-id mux)))
-    ;; Send run_test on control channel (C-012: channel_id at top level)
-    (channel-send-request! control
-                           (msg-run-test test-channel-id
-                                         test-cases))
-    ;; Server-driven event loop: read requests on the test channel
+         (test-channel (make-muxed-channel test-channel-id mux)))
+    ;; Send run_test on control channel; server acks with {"result": true}
+    (channel-send-request! control (msg-run-test test-channel-id test-cases))
+    ;; Tail-recursive event loop: read events on the test channel
     (let loop ((failures 0))
-      (let* ((packet (mux-read-for-channel! mux test-channel-id))
-             (payload (cbor-decode (hegl-packet-payload packet)))
-             (event-type (response-event payload))
-             (message-id (hegl-packet-message-id packet)))
+      (let* ((pkt (mux-read-for-channel! mux test-channel-id))
+             (msg (cbor-decode (hegl-packet-payload pkt)))
+             (event (response-event msg)))
         (cond
-         ;; test_case event — server wants us to run a test case
-         ((equal? event-type "test_case")
-          (let ((tc-channel-id (response-field payload "channel_id")))
-            ;; Acknowledge the test_case request (C-010: reply envelope)
-            (channel-write-reply! test-channel message-id 'null)
-            ;; Run the test case on the server-created channel
-            (let ((status (run-test-case! mux tc-channel-id thunk)))
-              (loop (if (string=? status %status-interesting)
-                        (+ failures 1)
-                        failures)))))
-
-         ;; test_done event — Hypothesis has finished
-         ((equal? event-type "test_done")
-          ;; Acknowledge the test_done request
-          (channel-write-reply! test-channel message-id 'null)
+         ((equal? event "test_case")
+          ;; Ack the test_case request from the server
+          (channel-write-reply! test-channel
+                                (hegl-packet-message-id pkt)
+                                'null)
+          ;; Execute thunk and report status
+          (let ((status (execute-test-case! mux msg thunk)))
+            (loop (if (string=? status %status-interesting)
+                      (+ failures 1)
+                      failures))))
+         ((equal? event "test_done")
+          ;; Ack the test_done event
+          (channel-write-reply! test-channel
+                                (hegl-packet-message-id pkt)
+                                'null)
+          ;; Return #t if no test cases were INTERESTING (failures)
           (= failures 0))
-
-         ;; Unexpected event — protocol violation
          (else
-          (error "hegel: unexpected event on test channel"
-                 event-type payload)))))))
+          (error "hegel: unexpected event in test loop" event msg)))))))
 
 ;;;; ── Run all registered tests ──────────────────────────────────────────────
 

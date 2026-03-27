@@ -29,7 +29,10 @@
             response-event
             response-value
             response-error
-            response-status))
+            response-status
+            response-channel-id
+            response-is-final
+            response-results))
 
 ;;;; ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -125,8 +128,11 @@ Must match Python Status enum names exactly (case-sensitive)."
   (let ((pair (assoc key msg)))
     (and pair (cdr pair))))
 
-(define (response-command msg) (response-field msg "command"))
-(define (response-event msg)   (response-field msg "event"))
-(define (response-value msg)   (response-field msg "value"))
-(define (response-error msg)   (response-field msg "error"))
-(define (response-status msg)  (response-field msg "status"))
+(define (response-command msg)    (response-field msg "command"))
+(define (response-event msg)     (response-field msg "event"))
+(define (response-value msg)     (response-field msg "value"))
+(define (response-error msg)     (response-field msg "error"))
+(define (response-status msg)    (response-field msg "status"))
+(define (response-channel-id msg)(response-field msg "channel_id"))
+(define (response-is-final msg)  (response-field msg "is_final"))
+(define (response-results msg)   (response-field msg "results"))
