@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Unit Tests (Guile 3.0)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Guile 3.0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y guile-3.0
+
+      - name: Cache Guile compilation
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/guile
+          key: guile-ccache-${{ runner.os }}-${{ hashFiles('src/**/*.scm') }}
+          restore-keys: |
+            guile-ccache-${{ runner.os }}-
+
+      - name: Set Guile binary names
+        run: |
+          echo "GUILE=guile-3.0" >> "$GITHUB_ENV"
+          echo "GUILD=guild-3.0" >> "$GITHUB_ENV"
+
+      - name: Compile
+        run: make compile
+
+      - name: Run unit tests
+        run: make test
+
+  integration-tests:
+    name: Integration Tests (hegel-core)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Guile 3.0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y guile-3.0
+
+      - name: Cache Guile compilation
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/guile
+          key: guile-ccache-${{ runner.os }}-${{ hashFiles('src/**/*.scm') }}
+          restore-keys: |
+            guile-ccache-${{ runner.os }}-
+
+      - name: Set up Python 3.11+
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv and hegel-core
+        run: |
+          pip install uv
+          uv tool install hegel-core
+
+      - name: Set Guile binary names
+        run: |
+          echo "GUILE=guile-3.0" >> "$GITHUB_ENV"
+          echo "GUILD=guild-3.0" >> "$GITHUB_ENV"
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Run integration examples
+        run: guile-3.0 -L src examples/basic.scm
