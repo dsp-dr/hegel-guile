@@ -1,5 +1,22 @@
 *.go
 *.log
+*.trs
+*.tar.gz
 .cache/
 .venv/
+.hegel/
 tmp/
+
+# Autotools generated
+/aclocal.m4
+/autom4te.cache/
+/build-aux/compile
+/build-aux/depcomp
+/build-aux/install-sh
+/build-aux/missing
+/config.log
+/config.status
+/configure
+Makefile.in
+src/Makefile.in
+src/hegel/Makefile.in
