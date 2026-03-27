@@ -5,10 +5,16 @@ description: Write property-based tests using Hegel for GNU Guile 3. Triggers on
 
 # Hegel for Guile: Property-Based Testing
 
+**Status: experimental** | **Protocol: Hegel/0.7** | **Requires: hegel-core ~0.2.x**
+
 Hegel is a universal property-based testing protocol powered by Hypothesis.
-`hegel-guile` is the Guile 3 client: a thin layer that speaks the Hegel
-CBOR-over-Unix-socket protocol to a `hegel-core` subprocess (Python/Hypothesis)
-which handles data generation and shrinking.
+`hegel-guile` is the Guile 3 client: a thin layer that speaks the HEGL
+packet protocol to a `hegel-core` subprocess (Python/Hypothesis) which
+handles data generation and shrinking.
+
+hegel-guile version tracks the Hegel protocol version: `0.7.x` for
+protocol 0.7. Breaking changes to hegel-guile's API are expected while
+experimental. hegel-core protocol changes trigger a full spec rebuild.
 
 Tests integrate with SRFI-64 and run via `guile -L src tests/my-test.scm`.
 
@@ -26,7 +32,7 @@ Identify hegel-guile presence from any of:
 | `src/hegel.scm` or `src/hegel/` | hegel-guile installed |
 | `(use-modules (hegel))` in any `.scm` file | hegel-guile in use |
 
-Load `references/guile.md` for API details and idiomatic patterns.
+Load `docs/guile.md` for API details and idiomatic patterns.
 
 ### 2. Explore the Code Under Test
 
