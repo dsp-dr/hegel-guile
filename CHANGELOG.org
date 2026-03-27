@@ -1,0 +1,107 @@
+#+TITLE: Changelog
+#+DESCRIPTION: All notable changes to hegel-guile, following Keep a Changelog (https://keepachangelog.com/)
+#+STARTUP: overview
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [[https://keepachangelog.com/en/1.1.0/][Keep a Changelog]].
+Version numbering tracks the Hegel protocol version: =0.7.x= for protocol 0.7.
+Patch bumps are hegel-guile fixes; a protocol bump from hegel-core triggers a minor version bump here.
+
+* [0.7.1] - 2026-03-27
+
+Initial release. Implements the HEGL wire protocol for hegel-core 0.2.3.
+
+** Added
+
+*** Wire Protocol Stack
+- CBOR codec (=cbor.scm=) --- RFC 8949 subset covering major types 0--5 and 7
+- CRC32 checksum (=crc32.scm=) --- pure Scheme, no C dependencies
+- HEGL packet framing (=packet.scm=) --- magic =0x4845474C=, CRC32 integrity, channel multiplexing
+- Packet demultiplexer (=mux.scm=) --- per-channel buffering for interleaved server traffic
+- Channel abstraction (=channel.scm=) --- message ID sequencing, reply validation, ={result: v}= envelope unwrap
+
+*** Protocol Layer
+- Protocol message constructors (=protocol.scm=) --- =run_test=, =generate=, =assume=, =mark_complete= matching hegel-core 0.2.3 vocabulary
+- Raw bytes handshake --- ="hegel_handshake_start"= / ="Hegel/0.7"= with version validation
+- Server-driven test case lifecycle (C14) --- event loop reads =test_case= / =test_done= events from server
+- Server manager (=server.scm=) --- spawn hegel-core subprocess, socket discovery, handshake
+
+*** Test Framework API
+- =define-hegel-test= macro for registering property tests
+- =run-hegel-tests!= for executing all registered tests against a single server connection
+- =tc-draw= for requesting server-generated values
+- =tc-assume= for precondition rejection (raises exception on =#f=)
+
+*** Generator Schemas
+- =integers= --- =#:min-value=, =#:max-value=
+- =booleans= --- =#:p=
+- =floats= --- =#:min-value=, =#:max-value=, =#:allow-nan=, =#:allow-infinity=
+- =text= --- =#:min-size=, =#:max-size=
+- =binary= --- =#:min-size=, =#:max-size=
+- =null-values=
+- =lists-of= --- =#:min-size=, =#:max-size=, =#:unique=
+- =one-of= --- variadic schemas
+- =sampled-from= --- list of items
+- =const-value= --- single value
+- =gen-filter= --- client-side predicate filtering via =tc-assume=
+- =gen-map= --- client-side transform
+
+*** Examples
+- =examples/basic.scm= --- commutativity, round-trips, model testing (port of hegel-rust quickstart)
+- =examples/sicp.scm= --- interval arithmetic, symbolic differentiation, rational numbers
+- =examples/ledger.scm= --- double-entry bookkeeping invariants
+- =examples/lisp.scm= --- minimal Lisp evaluator (eval/apply core)
+- =examples/todo.scm= --- CRUD model-based testing
+
+*** Tooling
+- Live wire protocol probes (=tools/stdio-probe.scm=, =tools/hegl-probe.scm=)
+- Emacs project integration (=hegel-guile.el=)
+- Claude Code skill definition for agent-assisted development
+
+*** Documentation
+- Conjecture research documents (=conjectures.org=, =conjectures-c10-c15.org=)
+- Experience report documenting CPRR multi-agent methodology (=experience-report.org=)
+- PBT ecosystem landscape research (=pbt-landscape.md=)
+- Observability layer design document (=observability-design.md=)
+
+*** Tests
+- 294 tests across 10 suites: cbor, crc32, packet, mux, channel, protocol, generators, server, test-case, test
+
+** Changed
+
+These are protocol corrections discovered during development. They represent
+deviations from the initial spec assumptions in =CLAUDE.md=, resolved through
+live probing and CPRR.
+
+- Framing: HEGL packet format (magic + CRC32 + channels) replaces the initial assumption of bare uint32-BE length-prefixed CBOR frames
+- Version strategy: version number tracks Hegel protocol version (=0.7.x= for protocol 0.7)
+- Status strings: UPPERCASE (=VALID= / =INVALID= / =INTERESTING=) matching Python =Status= enum, not lowercase (=passed= / =failed= / =invalid=)
+- Schema type names: singular forms (=integer= not =integers=, =string= not =text=)
+- Reply format: all replies wrapped in ={"result": value}= envelope (C10)
+- =run_test= message: =channel_id= required at top level (C12)
+- Server discovery: client creates socket path, passes as CLI arg (not read from server stdout)
+- Test case lifecycle: server-driven (server sends =test_case= events), not client-driven (client no longer sends =start_test_case=)
+
+** Conjectures
+
+Status of all CPRR conjectures at release. See =conjectures.org= and
+=conjectures-c10-c15.org= for full evidence and adversarial review.
+
+| ID  | Conjecture                         | Status              | Impact                                          |
+|-----+------------------------------------+---------------------+-------------------------------------------------|
+| C1  | Pyodide runs in Wasmtime           | REFUTED             | WASM track abandoned; Emscripten != WASI        |
+| C2  | hegel-core deps on CPython WASI    | OPEN                | Deferred; irrelevant without WASM track         |
+| C3  | WASI lacks Unix sockets            | CONFIRMED           | Validates stdio as only WASI transport          |
+| C4  | stdio transport viable             | CONFIRMED (0.2.3)   | hegel-core 0.2.3 ships =--stdio= natively      |
+| C5  | Hypothesis DB on WASI filesystem   | OPEN                | Deferred; irrelevant without WASM track         |
+| C6  | Guile drives python.wasm           | BLOCKED             | Joint probability < 0.25 across 4 open deps     |
+| C7  | CBOR framing is uint32-BE          | REFUTED (HEGL)      | Entire framing layer rewritten to HEGL packets  |
+| C8  | Handshake is client-initiates      | CONFIRMED           | Raw bytes handshake, not CBOR-encoded           |
+| C9  | HEGL impl matches wire format      | CONFIRMED           | Live probe validated packet framing              |
+| C10 | Reply payload is ={result: v}=     | CONFIRMED           | All channel reads unwrap envelope                |
+| C11 | Packet mux required                | CONFIRMED           | New =mux.scm= for interleaved traffic           |
+| C12 | =run_test= needs =channel_id=     | CONFIRMED           | =channel_id= added at top level of message       |
+| C13 | Status strings UPPERCASE           | CONFIRMED           | =VALID= / =INVALID= / =INTERESTING=             |
+| C14 | Server drives test case lifecycle  | IMPLEMENTED         | Event loop reads server events, not client loop  |
+| C15 | Schema type vocabulary             | CONFIRMED           | Singular forms: =integer=, =string=, =float=    |
