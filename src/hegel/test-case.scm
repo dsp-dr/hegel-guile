@@ -42,17 +42,12 @@ channel ID, and the client wraps it in a muxed channel for generate/assume."
 
 (define (tc-draw tc schema)
   "Ask the server to generate a value matching SCHEMA.
-SCHEMA is an alist; e.g. '((\"type\" . \"integers\") (\"min_value\" . 0)).
-Uses the 'generate' command on the test case's channel."
-  (let* ((channel (test-case-channel tc))
-         (resp (channel-send-request! channel (msg-generate schema))))
-    (cond
-     ((response-value resp)
-      (response-value resp))
-     ((response-error resp)
-      (error "hegel server error during generate" (response-error resp)))
-     (else
-      (error "hegel: unexpected generate response" resp)))))
+SCHEMA is an alist; e.g. '((\"type\" . \"integer\") (\"min_value\" . 0)).
+Uses the 'generate' command on the test case's channel.
+channel-send-request! unwraps the {\"result\": v} envelope (C10),
+so the return value is the bare generated value."
+  (channel-send-request! (test-case-channel tc)
+                         (msg-generate schema)))
 
 ;;;; ── Assume ─────────────────────────────────────────────────────────────────
 

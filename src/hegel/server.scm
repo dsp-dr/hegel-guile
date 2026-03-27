@@ -112,9 +112,11 @@ muxed channels separately (e.g., for server-driven test case lifecycle)."
 ;;;; ── Startup ───────────────────────────────────────────────────────────────
 
 (define (spawn-server cmd socket-path)
-  "Spawn hegel-core with SOCKET-PATH as CLI argument.
+  "Spawn hegel-core with SOCKET-PATH as CLI argument in background.
 Returns the pipe (for cleanup via close-pipe)."
-  (let* ((full-cmd (string-append cmd " " socket-path " 2>/tmp/hegel-server.log"))
+  (let* ((full-cmd (string-append cmd " " socket-path
+                                  " --verbosity quiet"
+                                  " 2>/tmp/hegel-server.log &"))
          (pipe (open-input-pipe full-cmd)))
     pipe))
 

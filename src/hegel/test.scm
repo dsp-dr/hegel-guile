@@ -89,10 +89,14 @@
   "Execute THUNK for a single test case described by EVENT-MSG.
 Creates a muxed channel for the server-assigned channel_id, runs THUNK
 with generate/assume on that channel, sends mark_complete.
-Returns the status string (VALID/INVALID/INTERESTING)."
+Returns the status string (VALID/INVALID/INTERESTING).
+
+When the server sends a StopTest error (Hypothesis terminating the test
+case internally), we absorb it and skip mark_complete — the server
+already knows the test case is done."
   (let* ((test-case-channel-id (response-field event-msg "channel_id"))
          (tc (make-test-case-on-mux mux test-case-channel-id))
-         (status (catch #t
+         (result (catch #t
                    (lambda ()
                      (thunk tc)
                      %status-valid)
@@ -100,10 +104,16 @@ Returns the status string (VALID/INVALID/INTERESTING)."
                      (if (eq? tag 'hegel-assume)
                          %status-invalid
                          %status-interesting)))))
-    ;; Send mark_complete on the test_case channel
-    (channel-send-request! (test-case-channel tc)
-                           (msg-mark-complete status))
-    status))
+    (let ((status result))
+      ;; Send mark_complete; absorb StopTest error replies
+      ;; (server sends StopTest as the reply when Hypothesis terminates
+      ;; the test case — this is expected control flow, not a failure)
+      (catch #t
+        (lambda ()
+          (channel-send-request! (test-case-channel tc)
+                                 (msg-mark-complete status)))
+        (lambda _ #f))
+      status)))
 
 ;;;; ── Single test execution (C-014: server-driven event loop) ─────────────
 
