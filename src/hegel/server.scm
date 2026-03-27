@@ -8,6 +8,8 @@
 ;;;   - Post-handshake traffic is multiplexed (C-011, C-014)
 
 (define-module (hegel server)
+  #:use-module (srfi srfi-9)
+  #:use-module (srfi srfi-11)
   #:use-module (hegel protocol)
   #:use-module (hegel channel)
   #:use-module (hegel packet)

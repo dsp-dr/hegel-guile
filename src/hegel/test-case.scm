@@ -4,6 +4,7 @@
 ;;; the old "draw" command, and "assume" marks a test case as invalid.
 
 (define-module (hegel test-case)
+  #:use-module (srfi srfi-9)
   #:use-module (hegel protocol)
   #:use-module (hegel channel)
   #:use-module (hegel mux)

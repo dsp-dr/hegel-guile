@@ -1,20 +1,19 @@
 # Makefile for hegel-guile
 
 GUILD   ?= guild
-GUILE   ?= guile3
+GUILE   ?= guile
 SRC_DIR := src
 TEST_DIR:= tests
 
-# Compile all modules
-.PHONY: compile test clean tangle
+.PHONY: compile test test-all repl clean tangle
 
 compile:
 	$(GUILD) compile -L $(SRC_DIR) \
 	  $(SRC_DIR)/hegel/crc32.scm \
 	  $(SRC_DIR)/hegel/cbor.scm \
 	  $(SRC_DIR)/hegel/packet.scm \
-	  $(SRC_DIR)/hegel/channel.scm \
 	  $(SRC_DIR)/hegel/mux.scm \
+	  $(SRC_DIR)/hegel/channel.scm \
 	  $(SRC_DIR)/hegel/protocol.scm \
 	  $(SRC_DIR)/hegel/generators.scm \
 	  $(SRC_DIR)/hegel/server.scm \
@@ -23,14 +22,15 @@ compile:
 	  $(SRC_DIR)/hegel.scm
 
 test: compile
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-cbor.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-crc32.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-packet.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-channel.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-protocol.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-generators.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-mux.scm
-	$(GUILE) -L $(SRC_DIR) $(TEST_DIR)/test-test.scm
+	@for f in $(TEST_DIR)/test-*.scm; do \
+		echo "=== Running $$f ==="; \
+		$(GUILE) -L $(SRC_DIR) "$$f" || exit 1; \
+	done
+
+test-all: test
+
+repl:
+	$(GUILE) -L $(SRC_DIR)
 
 tangle:
 	emacs --batch --eval \
@@ -39,4 +39,3 @@ tangle:
 
 clean:
 	find . -name '*.go' -delete
-	rm -f doc/architecture.mmd doc/protocol-flow.mmd
