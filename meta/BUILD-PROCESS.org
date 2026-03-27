@@ -1,0 +1,657 @@
+#+TITLE: Meta-Architecture: Reproducing the Hegel Client Build Process
+#+SUBTITLE: For hegel-go, hegel-ocaml, hegel-$LANG
+#+DATE: 2026-03-27
+#+STARTUP: overview
+
+* Scope
+
+This document describes how to build a Hegel protocol client for any
+language using the methodology that produced hegel-guile. The process
+is language-agnostic. It codifies the CPRR (Conjecture-Predict-Refute-Revise)
+workflow, multi-agent adversarial review, bottom-up module construction, and
+live verification patterns extracted from the experience report.
+
+The core insight: the protocol is the product. Every client is a thin adapter
+over the same wire protocol. The hard part is not code --- it is discovering
+what the wire protocol actually does, which differs from what the documentation
+says it does.
+
+* Foundational Axiom
+
+Property-based testing is a protocol problem, not a library problem. The
+generation and shrinking engine (Hypothesis) runs once as a server process;
+each target language implements only the thin wire protocol client. Do not
+reimplement generation, shrinking, or search strategy at any layer of the stack.
+
+The client is disposable. The protocol contract is permanent. Build the client
+to be replaced; build the conjecture log to outlast every implementation.
+
+* Phase 0: Conjecture Enumeration
+
+Before writing code, enumerate every assumption you hold about the protocol.
+Each assumption becomes a conjecture with an explicit falsification test. The
+goal is to be wrong early and cheaply.
+
+** Why Conjectures First
+
+hegel-guile started with 4 conjectures about the wire protocol (CBOR framing,
+handshake direction, key naming, status strings). All 4 were wrong. Had we
+written code first and conjectured later, we would have built 8 modules on a
+false foundation. The conjecture phase costs hours; the rework costs weeks.
+
+** Conjecture Template
+
+Every conjecture follows this structure:
+
+#+begin_example
+* STATUS CXX: One-sentence statement of the assumption
+  :PROPERTIES:
+  :BEAD: project-issue-NN
+  :STATUS: OPEN | CONFIRMED | REFUTED | BLOCKED
+  :DATE: YYYY-MM-DD
+  :END:
+
+** Conjecture
+
+Precise statement. What exactly are you assuming? Name the protocol
+message, the byte format, the field name, the status string.
+
+** Evidence
+
+What led you to believe this? Source file, blog post, hex dump,
+socat trace. Direct quotes with file:line references.
+
+** Falsification Test
+
+Concrete steps to disprove this conjecture. Not "test it" --- name the
+tool, the command, the expected output, and the output that would refute it.
+
+** Implementation Impact
+
+If this conjecture is wrong, which modules break? How deep is the rewrite?
+This determines the priority of falsification.
+#+end_example
+
+** Initial Conjecture Set
+
+For any Hegel client, start with these conjectures (derived from hegel-guile's
+C1-C15 and the gaps that cost the most time):
+
+| ID | Conjecture | Why It Matters |
+|----|-----------|----------------|
+| C-FRAME | Packet framing format (HEGL magic, CRC32, channel/message IDs) | Everything above the packet layer depends on this |
+| C-HANDSHAKE | Handshake sequence (who sends first, what format) | Connection setup; wrong = immediate crash |
+| C-MUX | Channel multiplexing semantics (interleaved packets) | Deadlock if you read sequentially per-channel |
+| C-REPLY | Reply envelope format ({"result": v} vs bare values) | Server crashes on bare CBOR; silent protocol error |
+| C-COMMANDS | Command vocabulary (run_test, generate, mark_complete) | Wrong command name = server KeyError |
+| C-STATUS | Status string format (UPPERCASE? lowercase? enum?) | Wrong case = server rejection at mark_complete |
+| C-SCHEMA | Schema type vocabulary (singular "integer" vs plural "integers") | Wrong type string = "Unsupported schema" |
+| C-TRANSPORT | Transport mechanism (Unix socket, stdio, TCP) | Determines server manager architecture |
+| C-EVENTS | Server-driven events (test_case, test_done) | The server drives the test loop, not the client |
+
+Every one of these was a source of bugs in hegel-guile. Enumerate yours before
+you write a line of code.
+
+** The Adversarial Review Pattern
+
+For each conjecture, assign two roles:
+
+- *Researcher*: deep context gathering. Read source, trace packets, find blog
+  posts, read existing client implementations (hegel-rust is ground truth).
+  Produce evidence for or against the conjecture.
+
+- *Adversary*: attempt to refute the researcher's conclusion. Attack from five
+  vectors: (1) the evidence is outdated, (2) the evidence is for a different
+  version, (3) there is a simpler explanation, (4) the conjecture is unfalsifiable
+  as stated, (5) the implementation impact is understated.
+
+In hegel-guile, 16 agents (2 per conjecture, 8 conjectures) ran concurrently.
+The adversarial agents produced the highest-value findings:
+
+- C6 adversary killed the WASM track (estimated 8-week savings)
+- C4 adversary identified 7 attack surfaces for stdio transport
+- C7/C8 researchers independently confirmed HEGL packet format from hegel-rust source
+
+Cost: ~850K tokens across 45 minutes. Cheap insurance against building on
+false assumptions.
+
+** Numbering Discipline
+
+Establish a single numbering authority. hegel-guile suffered a numbering
+collision (spec.org C1-C4 vs roadmap.org C1-C8 vs conjectures-c10-c15.org).
+Agent prompts referenced the wrong conjecture.
+
+Convention: use a monotonic integer prefixed with =C=. Never renumber. If a
+conjecture is split, use C12a/C12b. If superseded, mark SUPERSEDED with a
+forward reference.
+
+* Phase 1: Reference Implementation Reading
+
+** Which Files to Read
+
+hegel-core (Python/Hypothesis) is the server. hegel-rust is the reference
+client. Read both:
+
+*** hegel-core (server)
+| File | What to Extract |
+|------|----------------|
+| =packet.py= | HEGL packet structure: magic bytes, header layout, CRC32 algorithm, channel/message ID bit layout |
+| =channel.py= | Reply envelope format ({"result": v}), error envelope ({"error": msg, "type": name}), message ID allocation |
+| =connection.py= | Handshake sequence, channel creation, multiplexing strategy |
+| =server.py= | Server-driven event loop: when test_case/test_done events fire, what fields they carry |
+| =schema.py= | Schema type vocabulary: exact strings the server accepts ("integer", "text", "boolean", etc.) |
+
+*** hegel-rust (reference client)
+| File | What to Extract |
+|------|----------------|
+| =src/lib.rs= or =src/client.rs= | Client-side handshake, how it reads server events, how it dispatches test cases |
+| =src/packet.rs= or equivalent | Packet encoding/decoding --- this is ground truth for the wire format |
+| =Cargo.toml= | Dependencies --- reveals what protocol libraries are in use (cbor, crc32, etc.) |
+
+** What to Extract
+
+For each file, extract:
+
+1. *Byte-level wire format*: magic bytes, header size, endianness, CRC algorithm and scope
+2. *Handshake sequence*: who sends first, what the payload contains, what version negotiation looks like
+3. *Command vocabulary*: exact string values for every command (case matters)
+4. *Schema types*: exact string values the server dispatches on
+5. *Status strings*: exact string values for test case completion (case matters)
+6. *Event vocabulary*: server-to-client events (test_case, test_done), their fields
+7. *Channel semantics*: how channels are created, the reply bit, message ID allocation
+
+** The Live Probe Approach
+
+Do not trust source reading alone. Source tells you what the code does; the
+probe tells you what happens on the wire.
+
+Build a probe tool *before* building the client. The probe is a minimal script
+that:
+
+1. Spawns hegel-core (via =--stdio= or socket)
+2. Sends a handshake
+3. Sends run_test for 1 test case
+4. Reads and prints every packet, decoded
+5. Attempts generate and mark_complete
+6. Prints test_done results
+
+The probe uses only the lowest-level primitives (packet read/write, CBOR
+encode/decode). No abstractions. Its purpose is to observe the actual protocol
+behavior.
+
+hegel-guile's probe (=tools/stdio-probe.scm=) discovered 5 protocol gaps that
+source reading missed:
+
+| Gap | How Probe Discovered It |
+|-----|------------------------|
+| Reply envelope must be ={result: v}= | Server crashed on bare CBOR null |
+| Packets are interleaved across channels | =channel-recv-reply!= read wrong channel's packet |
+| =run_test= needs =channel_id= field | Server KeyError on missing field |
+| Status strings are UPPERCASE | Would have caused KeyError at =mark_complete= |
+| Schema types use singular form | Server returned "Unsupported schema" |
+
+*** Probe Template (pseudocode)
+
+#+begin_example
+1. spawn hegel-core --stdio --verbosity quiet
+2. create control channel (id=0)
+3. send handshake string on control channel
+4. read handshake reply, print it
+5. send run_test {command: "run_test", channel_id: 1, test_cases: 1}
+6. loop reading packets:
+   - if test_case event: ack, send generate on test channel, read value, send mark_complete VALID
+   - if test_done event: ack, print results, exit
+   - else: print and ack
+#+end_example
+
+Adapt to your target language. The probe need not be pretty. It needs to
+exercise every protocol message type and print every byte it sees.
+
+* Phase 2: Bottom-Up Module Construction
+
+** Build Order
+
+The module dependency graph is a DAG. Build from leaves to root. Each tier
+must pass its acceptance tests before the next tier begins.
+
+#+begin_example
+Tier 0: Serialization   (CBOR codec, CRC32)         -- zero internal deps
+Tier 1: Framing          (packet encode/decode)       -- depends on Tier 0
+Tier 2: Multiplexing     (mux, channel abstraction)   -- depends on Tier 1
+Tier 3: Protocol         (message constructors,        -- depends on Tier 2
+                          response accessors)
+Tier 4: Transport        (server spawn, connection,    -- depends on Tier 3
+                          handshake)
+Tier 5: Test case        (draw, assume, complete)      -- depends on Tier 4
+Tier 6: Generators       (schema combinators,          -- depends on Tier 3
+                          client-side filter/map)        (not Tier 4+)
+Tier 7: Test runner      (registration, execution      -- depends on Tier 4-6
+                          loop, reporting)
+Tier 8: Top-level module (re-exports public API)       -- depends on all
+#+end_example
+
+*** Language-Specific Tier 0
+
+CRC32 and CBOR are the only non-trivial Tier 0 components. Most languages have
+libraries for both. If not:
+
+- CRC32: implement the standard polynomial (0xEDB88320, reflected). ~30 lines
+  in any language. Use a lookup table for performance.
+- CBOR: implement only the major types the protocol uses (uint, negint, bytes,
+  text, array, map, float, bool, null). Do not implement tags, indefinite-length
+  encoding, or streaming. These add complexity with zero protocol benefit.
+
+** Acceptance Tests Per Tier
+
+Every tier has a concrete acceptance test. These are not aspirational --- they
+are the gate. If the acceptance test fails, stop. Document what failed, surface
+it as a new conjecture, and do not proceed.
+
+| Tier | Acceptance Test |
+|------|----------------|
+| 0 | Round-trip encode/decode for every CBOR type the protocol uses. CRC32 matches known test vectors. |
+| 1 | Encode a packet, decode it, verify magic/channel/message/payload/CRC match. |
+| 2 | Interleave packets from 3 channels, demux correctly. Reply bit routing works. |
+| 3 | Message constructors produce alists/maps matching protocol spec. Response accessors extract fields. |
+| 4 | Spawn hegel-core, connect, complete handshake, read server version. |
+| 5 | =draw= returns a server-generated value. =assume= raises/throws on false. |
+| 6 | Schema combinators produce correct maps. =gen-filter= rejects via =assume=. |
+| 7 | Register 2+ tests, run all, get 0 failures against live server. |
+| 8 | Single import gives access to full public API. |
+
+** Confirmation Gate
+
+Before writing code for any tier, output:
+
+1. Which tier you are building
+2. What the acceptance test is (exact command to run, expected output)
+3. What files you will create or modify
+
+This is not bureaucracy. In hegel-guile, it prevented scope creep at every tier
+and kept each module focused on its single responsibility.
+
+** Module Boundary Discipline
+
+Each module must satisfy:
+
+- *No upward dependencies*: Tier N never imports from Tier N+1.
+- *Explicit exports*: every public symbol is named in the module declaration.
+- *Thin protocol adapter*: no module reimplements server logic. The server
+  decides when to stop testing, what values to generate, and how to shrink.
+  The client relays.
+
+After completing a tier, run a dependency audit: grep for imports and verify no
+module imports from a higher tier. In hegel-guile, the post-gap-resolution
+audit caught zero violations because the scoping was precise. Prevention is
+cheaper than detection.
+
+* Phase 3: Live Verification
+
+** When to Probe
+
+After Tier 4 (transport) is complete, you have enough infrastructure to run
+the probe tool against a live hegel-core instance. Do this before building
+Tiers 5-7. The probe will surface gaps that no amount of source reading reveals.
+
+** Running the Probe
+
+#+begin_example
+1. Install hegel-core: pip install hegel  (or uv tool install hegel)
+2. Run your probe: $LANG_CMD probe.ext
+3. Capture all output (both stdout and stderr)
+4. For every unexpected behavior, create a new conjecture
+#+end_example
+
+** Documenting Gaps
+
+Every gap gets a conjecture entry (see Phase 0 template). Additionally, record:
+
+| Field | Purpose |
+|-------|---------|
+| How Discovered | Exact probe output that revealed the gap |
+| Expected | What you thought would happen |
+| Actual | What actually happened |
+| Bead | Issue tracker ID |
+| Files Affected | Which modules need changes |
+
+In hegel-guile, the probe against hegel-core 0.2.3 produced conjectures
+C10-C15, each mapping to a specific module change. The gap documentation was
+precise enough that 5 agents could fix all 5 gaps in parallel without conflicts.
+
+** Parallel Gap Resolution
+
+If the probe surfaces multiple independent gaps (different modules affected),
+fix them in parallel:
+
+- One agent/developer per gap
+- Each gets a scoped prompt: the conjecture, the affected files, the
+  acceptance test
+- Merge when all acceptance tests pass
+
+The scoping is critical. In hegel-guile, 5 agents fixed 5 gaps (C10-C15) with
+zero merge conflicts because each was restricted to its own file set:
+
+| Agent | Conjecture | Files |
+|-------|-----------|-------|
+| C10 | Reply envelope | channel.scm, test-channel.scm |
+| C11 | Packet mux | NEW mux.scm, channel.scm, test-mux.scm |
+| C12 | run_test format | protocol.scm, test-protocol.scm |
+| C13 | Status strings | protocol.scm, test.scm, test-protocol.scm |
+| C15 | Schema vocab | generators.scm, test-generators.scm |
+
+* Phase 4: Competing Implementations
+
+** When to Use This Pattern
+
+Not for every module. Only for architecturally significant decisions where:
+
+1. Multiple valid approaches exist
+2. The choice is hard to reverse
+3. The integration point is complex enough that subtle bugs hide
+
+In hegel-guile, this was C14 (the server-driven test loop). The test runner
+is where all protocol work meets the user API. Getting it wrong means silent
+protocol mismatches that only surface against a live server.
+
+** How to Structure
+
+*** Isolation: git worktrees
+
+Each competing implementation gets its own git worktree. Worktrees share
+history but have isolated working directories:
+
+#+begin_src sh
+# From main repository
+git worktree add ../project-approach-alpha -b c14/alpha
+git worktree add ../project-approach-beta  -b c14/beta
+git worktree add ../project-approach-gamma -b c14/gamma
+#+end_src
+
+Place worktrees as siblings, not children, of the main repo:
+
+#+begin_example
+~/ghq/github.com/org/
+  project/               # main
+  project-approach-alpha/ # worktree
+  project-approach-beta/  # worktree
+  project-approach-gamma/ # worktree
+#+end_example
+
+*** Independent Agents
+
+Each worktree gets its own agent/developer with a focused prompt:
+
+- The architectural approach to take (recursive loop, state machine, continuation, etc.)
+- The interface contract (same function signatures across all implementations)
+- The acceptance test (identical across all implementations)
+
+The interface contract is non-negotiable. All implementations must expose the
+same public API so the evaluator can test them identically.
+
+*** Evaluation
+
+A separate evaluator compares all implementations on:
+
+| Criterion | How to Measure |
+|-----------|---------------|
+| Correctness | Does it pass the acceptance test against live hegel-core? |
+| Simplicity | Line count, nesting depth, number of mutable bindings |
+| Idiomaticity | Does it feel native to the target language? |
+| Extensibility | Can it handle future protocol changes (new events, new commands)? |
+| Error handling | Does it surface protocol errors clearly, or swallow them? |
+
+** The Cherry-Pick Merge
+
+Rarely is one implementation best in every dimension. The merge typically takes:
+
+- Code structure from approach A (cleanest design)
+- Tests from approach B (most thorough coverage)
+- Error handling from approach C (best edge case handling)
+
+This is git cherry-pick and manual integration, not an automated merge. The
+evaluator produces a merge plan; a human (or a merge agent with the plan)
+executes it.
+
+* Phase 5: Release Prep
+
+** Version Strategy
+
+Lock to the protocol version, not the implementation version:
+
+#+begin_example
+hegel-guile 0.2.x  = compatible with hegel-core 0.2.x protocol
+hegel-guile 0.3.x  = compatible with hegel-core 0.3.x protocol
+#+end_example
+
+The client is a protocol adapter. Its version tracks the protocol it speaks.
+Internal refactors that do not change protocol compatibility get patch bumps.
+
+** Audit Checklist
+
+Before tagging a release, verify:
+
+| Item | Check |
+|------|-------|
+| LICENSE | Present, correct for your project |
+| Module exports | Every public symbol is explicitly exported; no accidental leakage |
+| Test suite | All tiers pass (=make test= or equivalent) |
+| Live test | End-to-end against installed hegel-core succeeds |
+| Probe | Probe tool runs clean against target hegel-core version |
+| CI/CD | Pipeline runs on push, tests against pinned hegel-core version |
+| Conjecture log | All conjectures have final status (CONFIRMED/REFUTED/SUPERSEDED) |
+| Anti-goals | No generation, shrinking, or search logic in the client |
+| Dependencies | Minimal; prefer language stdlib over third-party packages |
+
+** Badge Conventions
+
+If using a badge system (beads, GitHub issues, etc.), close all implementation
+beads before release. Open conjectures that are not blocking (e.g., future
+protocol features) remain open but are tagged with the next milestone.
+
+* Phase 6: Tooling Template
+
+** Makefile Structure
+
+A minimal Makefile for a Hegel client project. Adapt the compile/test commands
+to your language:
+
+#+begin_src makefile
+# Makefile for hegel-$LANG
+
+# Tool paths (override via environment)
+COMPILER ?= your-compiler
+RUNNER   ?= your-runtime
+
+SRC_DIR  := src
+TEST_DIR := tests
+
+.PHONY: compile test test-all probe repl clean
+
+# Compile in dependency order (Tier 0 first, Tier 8 last)
+compile:
+	$(COMPILER) $(SRC_DIR)/hegel/crc32.ext \
+	  $(SRC_DIR)/hegel/cbor.ext \
+	  $(SRC_DIR)/hegel/packet.ext \
+	  $(SRC_DIR)/hegel/mux.ext \
+	  $(SRC_DIR)/hegel/channel.ext \
+	  $(SRC_DIR)/hegel/protocol.ext \
+	  $(SRC_DIR)/hegel/generators.ext \
+	  $(SRC_DIR)/hegel/server.ext \
+	  $(SRC_DIR)/hegel/test_case.ext \
+	  $(SRC_DIR)/hegel/test.ext \
+	  $(SRC_DIR)/hegel.ext
+
+# Run all tier tests
+test: compile
+	@for f in $(TEST_DIR)/test-*; do \
+		echo "=== Running $$f ==="; \
+		$(RUNNER) "$$f" || exit 1; \
+	done
+
+# Live probe against hegel-core
+probe: compile
+	$(RUNNER) tools/stdio-probe.ext
+
+# Interactive development
+repl:
+	$(RUNNER) --interactive
+
+clean:
+	# Remove compiled artifacts
+#+end_src
+
+Key properties:
+
+- Compile order matches the tier DAG. Earlier modules cannot depend on later ones.
+- =test= fails fast (=|| exit 1=). A Tier 1 failure should not be obscured by Tier 5 output.
+- =probe= is a separate target, not part of =test=. Probe requires a running hegel-core; tests should be self-contained.
+- =tangle= target (optional): if using literate programming (Org-mode, etc.), tangle source from the document.
+
+** Test Conventions
+
+For languages with a standard test framework (SRFI-64 for Guile, testing for
+Go, OUnit for OCaml, etc.):
+
+- One test file per module: =test-cbor.ext=, =test-packet.ext=, etc.
+- Test file names match module names with =test-= prefix.
+- Each test file is independently runnable (no test harness dependency beyond
+  the standard framework).
+- Round-trip tests for serialization: encode, decode, compare.
+- Known-vector tests for CRC32 and CBOR (use RFC test vectors).
+- Boundary tests: empty payload, maximum-size payload, zero channel ID, maximum
+  message ID, negative integers, NaN/Inf floats.
+
+** Issue Tracking Integration
+
+If using beads (=.beads/issues.jsonl=) or similar lightweight issue tracking:
+
+- One bead per conjecture that requires implementation work
+- Bead fields: id, title, status, conjecture reference, files affected
+- Status flow: open -> active -> done (or blocked)
+- The conjecture log is the source of truth; beads are the work items derived from it
+
+** Probe Tool Pattern
+
+The probe is the most valuable artifact after the conjecture log. It outlives
+every refactor because it exercises the wire protocol directly, with no
+abstraction layers.
+
+Structure (adapted from hegel-guile's =tools/stdio-probe.scm=):
+
+#+begin_example
+1. Parse HEGEL_CMD environment variable (or default path)
+2. Spawn hegel-core with --stdio --verbosity quiet
+3. Disable output buffering on the pipe
+4. Create control channel (id=0)
+5. Send handshake, read and print reply
+6. Send run_test on control channel with channel_id and test_cases
+7. Enter packet read loop:
+   a. Read one HEGL packet
+   b. Print: channel, message_id, is_reply, decoded payload
+   c. Dispatch on packet type:
+      - Reply to run_test: log and continue
+      - test_case event: ack, send generate, read value, send mark_complete
+      - test_done event: ack, print results, exit
+      - Unknown: log, ack if request, continue
+8. Close connection
+#+end_example
+
+The probe should print everything. When something goes wrong, the probe output
+is the primary diagnostic artifact.
+
+* Appendix A: Anti-Goals Checklist
+
+Before every release, verify none of these have crept in:
+
+| Anti-Goal | Symptom |
+|-----------|---------|
+| PBT engine reimplementation | Code that generates random values locally |
+| General CBOR library | CBOR tags, indefinite-length encoding, streaming |
+| Standalone mode | Tests that run without hegel-core |
+| Test framework replacement | Project positions itself as alternative to the language's standard test framework |
+| Server health monitoring | Reconnection logic, heartbeats, keep-alive |
+| Local shrinking | Code that reduces failing inputs without asking the server |
+
+If any symptom is present, extract it. The client is a thin protocol adapter.
+Thickness is a bug.
+
+* Appendix B: Cost-Benefit Reference (from hegel-guile)
+
+| Phase | Agents | Tokens | Tests | Issues Found | Wall Time |
+|-------|--------|--------|-------|-------------|-----------|
+| Conjecture research | 16 | ~850K | 0 | 8 assessed | ~45 min |
+| Bottom-up rewrite | 1 | ~50K | 142 | 0 (built from ground truth) | ~3 hrs |
+| Live probe | 1 | ~20K | 0 | 5 protocol gaps | ~1 hr |
+| Gap resolution | 5 | ~200K | 106 | 0 (built from evidence) | ~2 hrs |
+| Competing impls (C14) | 5 | ~300K | TBD | TBD | ~2 hrs |
+| *Total* | *~28* | *~1.4M* | *248+* | *13+* | *~9 hrs* |
+
+The research phase was the highest token cost and the highest value. It
+prevented 8 weeks of work on the WASM track and identified the correct wire
+protocol before any integration code was written.
+
+* Appendix C: File Layout Reference
+
+#+begin_example
+hegel-$LANG/
+  CLAUDE.md              # Agent instructions (build order, anti-goals, conjectures)
+  Makefile               # Build and test automation
+  conjectures.org        # Primary conjecture log
+  conjectures-cNN.org    # Gap conjectures from live probes
+  experience-report.org  # Methodology documentation
+  roadmap.org            # Phased plan with upstream watch list
+  .beads/issues.jsonl    # Issue tracker
+  src/
+    hegel/
+      crc32.ext          # Tier 0: CRC32
+      cbor.ext           # Tier 0: CBOR codec
+      packet.ext         # Tier 1: HEGL packet framing
+      mux.ext            # Tier 2: Packet multiplexer
+      channel.ext        # Tier 2: Channel abstraction
+      protocol.ext       # Tier 3: Message constructors
+      generators.ext     # Tier 6: Schema combinators
+      server.ext         # Tier 4: Server management
+      test_case.ext      # Tier 5: Draw/assume/complete
+      test.ext           # Tier 7: Test runner
+    hegel.ext            # Tier 8: Top-level re-export
+  tests/
+    test-crc32.ext       # One test file per module
+    test-cbor.ext
+    test-packet.ext
+    test-mux.ext
+    test-channel.ext
+    test-protocol.ext
+    test-generators.ext
+    test-server.ext
+    test-test-case.ext
+    test-test.ext
+  tools/
+    stdio-probe.ext      # Live wire protocol probe
+    hegl-probe.ext       # Socket/socat probe variant
+  examples/
+    basic.ext            # End-to-end smoke test
+  meta/
+    BUILD-PROCESS.org    # This document
+#+end_example
+
+* Appendix D: Sequencing Across Languages
+
+If building multiple clients simultaneously (as Hegel intends with Go, OCaml,
+TypeScript, C++), the conjecture log and probe tools transfer directly:
+
+1. *Conjecture log*: language-independent. C-FRAME is the same conjecture
+   whether you are writing Go or OCaml. Maintain one canonical log.
+
+2. *Probe tool*: build the first probe in whatever language is fastest for you.
+   Port it to each target language as that language's Tier 0-1 stabilizes.
+   The probe output from language A validates language B's implementation.
+
+3. *Test vectors*: capture packet hex dumps from the probe. Use them as
+   known-good test vectors in every language's Tier 1 tests. A packet that
+   decodes correctly in Rust and Guile should decode correctly in Go.
+
+4. *Gap conjectures*: when language A's probe discovers a gap, it applies to all
+   languages. Broadcast immediately.
+
+The methodology scales horizontally because the protocol is the shared contract.
+Each language's work is independent once the conjectures are established.
