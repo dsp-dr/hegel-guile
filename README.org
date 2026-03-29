@@ -28,7 +28,7 @@ uv tool install hegel-core
 gmake test
 
 # Run property tests against live server
-guile -L src examples/basic.scm
+guile3 -L src examples/basic.scm
 #+end_src
 
 ** Usage
@@ -113,6 +113,8 @@ tests/
     test-channel.scm       Channel abstraction tests
     test-protocol.scm      Protocol message + conjecture validation
     test-generators.scm    Generator schema + C-015 type name tests
+    test-server.scm        Server lifecycle mock tests
+    test-test-case.scm     tc-draw/tc-assume mock tests (HEGL packets)
     test-test.scm          Server-driven event loop tests
 tools/
     stdio-probe.scm        Live wire protocol probe (--stdio mode)
