@@ -1,0 +1,166 @@
+#+TITLE: Hegel Protocol Map
+#+AUTHOR: dsp-dr
+#+DATE: 2026-03-29
+#+DESCRIPTION: Implicit protocol specification derived from hegel-core and hegel-rust source
+
+* Purpose
+
+No standalone Hegel protocol specification exists. This document is our
+implicit protocol map — derived from reading =hegel-core= and =hegel-rust=
+source code, validated by CPRR conjectures against live servers.
+
+We maintain this so we know exactly what contract we're implementing,
+even if upstream never writes a spec.
+
+* Protocol Version: 0.7
+
+| Source | Location | Value |
+|--------+----------+-------|
+| hegel-core | =src/hegel/protocol/connection.py:22= | ~PROTOCOL_VERSION = 0.7~ |
+| hegel-rust | =src/runner.rs:16= | ~SUPPORTED_PROTOCOL_VERSIONS: (0.6, 0.7)~ |
+| hegel-guile | =src/hegel/protocol.scm= | ~%supported-protocol-versions '(0.6 . 0.7)~ |
+| Wire | Handshake reply | ~b"Hegel/0.7"~ |
+
+** Protocol version history
+
+| core version | protocol | change |
+|--------------+----------+--------|
+| 0.2.0 | 0.5 | HealthCheck support |
+| 0.2.2 | 0.7 | derandomize/database in run_test |
+| 0.2.3 | 0.7 | --stdio transport (no protocol change) |
+
+* Handshake (C-008 confirmed)
+
+#+begin_example
+Client → Server: b"hegel_handshake_start"  (raw bytes, not CBOR)
+Server → Client: b"Hegel/0.7"             (raw bytes, not CBOR)
+#+end_example
+
+Both sent as HEGL packets on channel 0, message IDs 1 and reply(1).
+
+* HEGL Packet Format (C-009 confirmed)
+
+#+begin_example
+[4B magic 0x4845474C "HEGL"]
+[4B CRC32]
+[4B channel_id]
+[4B message_id]           ; bit 31 = reply flag
+[4B payload_length]
+[NB payload]
+[1B terminator 0x0A]
+#+end_example
+
+Source: =hegel-core/src/hegel/protocol/packet.py=, =hegel-rust/src/protocol/packet.rs=
+
+* Channel Multiplexing
+
+| Channel | Owner | Purpose |
+|---------+-------+---------|
+| 0 | shared | Control (handshake, run_test) |
+| odd IDs | client | Client-initiated (not currently used) |
+| even IDs | server | Server-assigned test case channels |
+
+Client channel ID encoding: ~(logior (ash n 1) 1)~
+Server channel ID encoding: ~(ash n 1)~
+
+* Command Vocabulary (C-012 confirmed)
+
+** Client → Server (requests)
+
+| Command | Fields | Channel |
+|---------+--------+---------|
+| =run_test= | channel_id, test_cases, [database], [seed], [database_key], [derandomize] | control (0) |
+| =generate= | schema | test case channel |
+| =assume= | (no fields) | test case channel |
+| =mark_complete= | status | test case channel |
+
+** Server → Client (events on test channel)
+
+| Event | Fields |
+|-------+--------|
+| =test_case= | channel_id (for generate/assume) |
+| =test_done= | results |
+
+** Reply Envelope (C-010 confirmed)
+
+All replies are CBOR maps:
+- Success: ~{"result": value}~
+- Error: ~{"error": message, "type": error_type}~
+
+Bare CBOR values in replies are a protocol violation.
+
+* Status Strings (C-013 confirmed)
+
+UPPERCASE, case-sensitive. Matches Python =Status= enum names.
+
+| Status | Meaning |
+|--------+---------|
+| =VALID= | Test case passed |
+| =INVALID= | Test case rejected (tc-assume) |
+| =INTERESTING= | Test case failed (property violation) |
+
+* Schema Type Vocabulary (C-015 confirmed)
+
+| Generator | Wire type string | Notes |
+|-----------+------------------+-------|
+| integers | ="integer"= | not "integers" |
+| booleans | ="boolean"= | not "booleans" |
+| floats | ="float"= | not "floats" |
+| text | ="string"= | not "text" |
+| binary | ="binary"= | |
+| null-values | ="null"= | |
+| lists-of | ="list"= | not "lists" |
+
+Top-level key schemas (no ="type"= field):
+
+| Generator | Wire key |
+|-----------+----------|
+| one-of | ="one_of"= |
+| sampled-from | ="sampled_from"= |
+| const-value | ="const"= |
+
+Source: =hegel-core/src/hegel/schema.py= ~_from_schema()~
+
+* Test Case Lifecycle (C-014 implemented)
+
+Server-driven. The server decides when to start/stop test cases.
+
+#+begin_example
+1. Client sends run_test on control channel (ch 0)
+2. Server acks with {"result": true}
+3. Server sends {"event": "test_case", "channel_id": N}  (loop)
+4. Client acks test_case, runs thunk with generate/assume on channel N
+5. Client sends mark_complete with status on channel N
+6. Server sends {"event": "test_done", "results": {...}}  (end)
+#+end_example
+
+* Transport
+
+** Unix socket (current, hegel-core ≤0.2.3)
+
+Server writes socket path to stdout, client connects.
+
+** stdio (hegel-core 0.2.3+, hegel-rust 0.2.4+)
+
+~hegel --stdio~ — same HEGL packets over stdin/stdout.
+Eliminates socket-file race condition.
+Our P2 bead (hegel-guile-m9u).
+
+* Upstream Check Procedure
+
+Before any development session:
+
+1. ~git -C /home/dsp-dr/ghq/github.com/hegeldev/hegel-core pull~
+2. ~git -C /home/dsp-dr/ghq/github.com/hegeldev/hegel-rust pull~
+3. Check ~grep PROTOCOL_VERSION hegel-core/src/hegel/protocol/connection.py~
+4. If protocol version changed → HALT, assess impact, update this document
+5. If only package version changed → review CHANGELOG, decide whether to bump pin
+6. Check ~hegel-rust/CHANGELOG.md~ for new patterns we should adopt
+
+* Pinned Versions (as of 2026-03-29)
+
+| Component | Pinned | Protocol |
+|-----------+--------+----------|
+| hegel-core | ==0.2.3 (pyproject.toml) | 0.7 |
+| hegel-rust | v0.3.4 (reference only) | 0.6–0.7 |
+| hegel-guile | 0.7.1 | 0.6–0.7 |
