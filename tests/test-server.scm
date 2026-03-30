@@ -46,11 +46,11 @@
 (test-group "hegel-connection record accessors"
 
   ;; Construct a mock connection using the internal constructor.
-  ;; New record: (in-port out-port socket-obj proc mux control-channel server-version channel-counter)
+  ;; Record: (in-port out-port close-thunk control-channel mux server-version channel-counter)
   (let* ((mock-in  (open-input-file "/dev/null"))
          (mock-out (open-output-file "/dev/null"))
          (conn     ((@@ (hegel server) %make-hegel-connection)
-                    mock-in mock-out #f 'mock-proc
+                    mock-in mock-out (lambda () #f)
                     'mock-ctl 'mock-mux "0.7" 1)))
 
     (test-assert "hegel-connection? recognises the record"
@@ -71,24 +71,28 @@
     (close-port mock-in)
     (close-port mock-out)))
 
-;;;; ── close-hegel-connection! port-closing logic ───────────────────────────
-;;
-;; close-hegel-connection! closes (car port), (cdr port), then calls
-;; close-pipe on the proc.  We cannot call the full function in tests
-;; because close-pipe segfaults on FreeBSD Guile 3.x (known platform bug).
-;; Instead we directly verify the port-closing steps it performs.
+;;;; ── close-hegel-connection! calls the close thunk ──────────────────────
 
-(test-group "close-hegel-connection! port-closing logic"
+(test-group "close-hegel-connection! invokes close-thunk"
 
-  ;; close-hegel-connection! closes in-port, out-port, and close-pipe on proc.
-  ;; We just verify port closing works.
-  (let* ((mock-in  (open-input-file "/dev/null"))
-         (mock-out (open-output-file "/dev/null")))
-    (close-port mock-in)
-    (close-port mock-out)
-    (test-assert "in-port is closed after close-port"
+  ;; close-hegel-connection! delegates to the transport-specific close-thunk.
+  ;; Verify the thunk is called and ports are closed.
+  (let* ((mock-in    (open-input-file "/dev/null"))
+         (mock-out   (open-output-file "/dev/null"))
+         (thunk-called? #f)
+         (conn       ((@@ (hegel server) %make-hegel-connection)
+                      mock-in mock-out
+                      (lambda ()
+                        (close-port mock-in)
+                        (close-port mock-out)
+                        (set! thunk-called? #t))
+                      'mock-ctl 'mock-mux "0.7" 1)))
+    (close-hegel-connection! conn)
+    (test-assert "close-thunk was called"
+      thunk-called?)
+    (test-assert "in-port is closed after close"
       (port-closed? mock-in))
-    (test-assert "out-port is closed after close-port"
+    (test-assert "out-port is closed after close"
       (port-closed? mock-out))))
 
 ;;;; ── make-hegel-connection (SKIPPED — requires live server) ───────────────
