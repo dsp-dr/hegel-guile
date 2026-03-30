@@ -71,4 +71,22 @@
        (decoded (cbor-decode encoded)))
   (test-equal "bytevector round-trip" "ok" (cdr (assoc "type" decoded))))
 
+;;; ── Regression: inexact integers encode as float, not integer ──────────────
+;;; Fix from v0.7.1: (integer? 3.0) is #t in Guile, but 3.0 must encode as
+;;; CBOR float64 (major type 7), not CBOR uint (major type 0).
+
+(let* ((exact-bv   (cbor-encode 3))
+       (inexact-bv (cbor-encode 3.0)))
+  ;; Exact 3 → major type 0 (uint), single byte: 0x03
+  (test-equal "exact 3 encodes as uint" #x03 (bytevector-u8-ref exact-bv 0))
+  ;; Inexact 3.0 → major type 7 (float64), first byte: 0xfb
+  (test-equal "inexact 3.0 encodes as float64" #xfb (bytevector-u8-ref inexact-bv 0))
+  ;; They must NOT be the same encoding
+  (test-assert "exact and inexact have different CBOR encodings"
+    (not (equal? exact-bv inexact-bv)))
+  ;; Round-trip: 3.0 must come back as inexact
+  (let ((decoded (cbor-decode inexact-bv)))
+    (test-assert "inexact 3.0 round-trips as inexact"
+      (and (= decoded 3.0) (inexact? decoded)))))
+
 (test-end "cbor-codec")

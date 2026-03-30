@@ -1,0 +1,174 @@
+#+TITLE: Testing Strategy & Architecture Revisit
+#+AUTHOR: dsp-dr
+#+DATE: 2026-03-30
+
+* Testing Tiers
+
+** Tier 1: Unit Tests (no server, no network)
+
+Run on every commit. Must pass on FreeBSD/Guile 3.x.
+
+| Suite | Module | Tests | Coverage |
+|-------+--------+-------+----------|
+| test-cbor.scm | cbor.scm | 23 | Encode/decode all CBOR types, round-trips |
+| test-crc32.scm | crc32.scm | 7 | Known test vectors |
+| test-packet.scm | packet.scm | 19 | HEGL framing, CRC validation, magic/terminator |
+| test-mux.scm | mux.scm | 33 | Packet routing, channel buffering, interleaving |
+| test-channel.scm | channel.scm | 28 | Direct + muxed channels, reply envelope (C-010) |
+| test-protocol.scm | protocol.scm | 46 | Commands, status strings, handshake bytes |
+| test-generators.scm | generators.scm | 92 | Schema structure, type names (C-015), CBOR round-trips |
+| test-server.scm | server.scm | 18 | Config, record accessors, close-thunk, transport UATs |
+| test-test-case.scm | test-case.scm | 10 | tc-draw/tc-assume with mock HEGL packets |
+| test-test.scm | test.scm | 38 | Event loop, execute-test-case!, state machine |
+
+** Tier 2: Integration Tests (live hegel-core, localhost)
+
+Run manually or in CI with =continue-on-error=.
+Require =hegel-core==0.2.3= and =uv=.
+
+| Test | What it covers |
+|------+----------------|
+| examples/basic.scm | Full E2E: spawn, handshake, 4 property tests |
+| examples/sicp.scm | 6 SICP-inspired property tests |
+| examples/ledger.scm | 4 double-entry bookkeeping tests |
+| examples/lisp.scm | 8 Lisp evaluator property tests |
+| examples/todo.scm | 7 CRUD model-based tests |
+
+Known issue: hangs at 200+ test cases (hegel-guile-njn).
+
+** Tier 3: Protocol Conformance (upstream diff)
+
+Not automated. Run before any dependency bump.
+
+1. Pull hegeldev/hegel-core and hegeldev/hegel-rust
+2. Diff against known-good state
+3. Check =PROTOCOL_VERSION= in =connection.py=
+4. Cross-reference =docs/protocol-map.org= against current source
+5. If protocol version changed → architecture revisit (see below)
+
+* Regression Tests
+
+Regressions we've hit and MUST keep covered:
+
+| Regression | Test | What happened |
+|------------+------+---------------|
+| Inexact integer CBOR encoding | test-cbor.scm (implicit) | =1.0= (inexact) was encoded as CBOR integer instead of float |
+| FreeBSD close-pipe segfault | test-server.scm (skip) | =close-pipe= on mock R6RS bytevector ports crashes Guile 3.x |
+| FreeBSD open-input-output-pipe segfault | server.scm (pipe+fork) | =open-input-output-pipe= segfaults; replaced with POSIX pipe+fork |
+| guild3 requires explicit srfi-9 import | compile step | Runtime auto-imports but compiler doesn't |
+| Schema type names (C-015) | test-generators.scm | "integers" vs "integer" — server rejects plural forms |
+| Status strings case (C-013) | test-protocol.scm | Must be UPPERCASE: VALID, INVALID, INTERESTING |
+| Reply envelope (C-010) | test-channel.scm | Server always wraps in ={result: v}=, bare values are violations |
+
+* Known Gaps
+
+| Gap | Risk | Mitigation |
+|-----+------+------------|
+| stdio transport untested E2E | High | Blocked on P4 (E2E hang fix); config flag allows fallback to socket |
+| No crash detection | High | P3 bead; EOF propagates but error message is opaque |
+| No read timeout | Medium | Hung server blocks client forever; needs =select= on fd |
+| Mux unbounded buffering | Low | Malicious server could exhaust memory; PBT tests are finite |
+| define-hegel-test / run-hegel-tests! registration | Medium | Macros tested only via event loop; no standalone registration test |
+
+* Architecture Revisit Triggers
+
+When upstream changes force us to redefine our invariants.
+
+** Trigger 1: Protocol Version Bump
+
+=PROTOCOL_VERSION= in =hegel-core/src/hegel/protocol/connection.py= changes.
+
+*** Impact
+- Our handshake version check may reject the new server
+- Commands, status strings, schema types may have changed
+- =docs/protocol-map.org= becomes stale
+
+*** Response
+1. HALT all other work
+2. Pull both reference repos
+3. Diff =connection.py=, =channel.py=, =packet.py=, =schema.py=, =server.py=
+4. For each change, determine: additive (backward-compatible) or breaking
+5. Update =docs/protocol-map.org= with new contract
+6. Update =%supported-protocol-versions= range
+7. Update conjectures: any refuted? any new ones needed?
+8. Bump =%hegel-guile-version= minor (e.g., 0.7.x → 0.8.x)
+9. Run full Tier 1 + Tier 2 test suites
+
+** Trigger 2: HEGL Packet Format Change
+
+Packet header layout, magic bytes, CRC algorithm, or terminator changes.
+
+*** Impact
+- Wire-level incompatibility: packets won't parse
+- Every module above packet.scm breaks
+
+*** Response
+1. Update =packet.scm= and =crc32.scm=
+2. Regenerate all test vectors in =test-packet.scm= and =test-crc32.scm=
+3. Run full test suite
+4. Update =docs/protocol-map.org= Section 3
+
+** Trigger 3: Command Vocabulary Change
+
+New commands added, existing commands renamed, field layouts changed.
+
+*** Impact
+- =protocol.scm= message constructors produce wrong alists
+- =test.scm= event loop may not handle new events
+- =test-case.scm= generate/assume may use wrong command names
+
+*** Response
+1. Diff =hegel-core/src/hegel/server.py= command dispatch
+2. Update =protocol.scm= constructors
+3. Update =test.scm= event loop for new events
+4. Update =docs/protocol-map.org= Sections 4-5
+
+** Trigger 4: Transport Change
+
+New transport mode added (e.g., TCP, WebSocket, gRPC).
+
+*** Impact
+- =server.scm= needs new transport variant
+- Feature flag set needs expansion
+
+*** Response
+1. Add new transport behind =HEGEL_TRANSPORT= flag
+2. Keep existing transports as fallbacks
+3. Add UATs for new flag value
+4. Update =docs/protocol-map.org= Section 10
+
+** Trigger 5: Schema Vocabulary Change
+
+New generator types, changed type strings, new schema keys.
+
+*** Impact
+- =generators.scm= may produce schemas the server doesn't recognize
+- =test-generators.scm= C-015 assertions fail
+
+*** Response
+1. Diff =hegel-core/src/hegel/schema.py= =_from_schema()=
+2. Add/update generators
+3. Update C-015 test assertions
+4. Update =docs/protocol-map.org= Section 8
+
+* Contract Ownership
+
+| Contract | Owner | Source of Truth |
+|----------+-------+----------------|
+| HEGL packet format | hegeldev/hegel-core =packet.py= | =docs/protocol-map.org= Section 3 |
+| Handshake sequence | hegeldev/hegel-core =connection.py= | =docs/protocol-map.org= Section 2 |
+| Command vocabulary | hegeldev/hegel-core =server.py= | =docs/protocol-map.org= Section 4 |
+| Reply envelope | hegeldev/hegel-core =channel.py= | =docs/protocol-map.org= Section 5 |
+| Status strings | hegeldev/hegel-core =server.py= (Hypothesis Status enum) | =docs/protocol-map.org= Section 6 |
+| Schema types | hegeldev/hegel-core =schema.py= | =docs/protocol-map.org= Section 8 |
+| Test lifecycle | hegeldev/hegel-core =server.py= | =docs/protocol-map.org= Section 9 |
+| Transport modes | hegeldev/hegel-core =connection.py= | =docs/protocol-map.org= Section 10 |
+| Protocol version | hegeldev/hegel-core =connection.py:22= | Single constant, checked at handshake |
+
+All contracts are owned by hegeldev. We are a downstream consumer.
+Our =docs/protocol-map.org= is our derived understanding — it must be
+re-verified against source whenever upstream changes.
+
+Our CPRR conjectures (=conjectures.org=) track what we've verified
+empirically. Not all contracts have been probed live — some are
+derived from source reading only.

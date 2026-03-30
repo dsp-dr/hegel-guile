@@ -323,4 +323,22 @@
     (test-assert "gen-map _proc is a procedure"
       (procedure? (cdr (assoc "_proc" s))))))
 
+;;;; ── define-composite macro ──────────────────────────────────────────────
+
+(test-group "define-composite"
+
+  ;; define-composite defines a function that returns a thunk taking tc.
+  ;; We can't call tc-draw without a server, but we can verify it produces
+  ;; a callable thunk.
+  (define-composite (my-point tc x-gen y-gen)
+    (list (cons "x" 'placeholder-x)
+          (cons "y" 'placeholder-y)))
+
+  (test-assert "define-composite creates a procedure"
+    (procedure? my-point))
+
+  (let ((thunk (my-point (integers) (floats))))
+    (test-assert "define-composite returns a thunk (procedure)"
+      (procedure? thunk))))
+
 (test-end "generators")

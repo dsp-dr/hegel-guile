@@ -236,4 +236,26 @@ For testing, we use a buffer: write to out, read from in."
             (test-equal "send-request unwraps result"
               999 (cdr (assoc "value" result)))))))))
 
+;;;; ── channel-close! ─────────────────────────────────────────────────────────
+
+(test-group "channel-close! sends close packet"
+
+  ;; channel-close! should write a packet with the close message ID and 0xFE payload
+  (call-with-values
+    (lambda () (open-bytevector-output-port))
+    (lambda (out-port get-bytes)
+      (let ((channel (make-hegel-channel 5
+                       (open-bytevector-input-port (make-bytevector 0))
+                       out-port)))
+        (channel-close! channel)
+        (let* ((raw    (get-bytes))
+               (in     (open-bytevector-input-port raw))
+               (pkt    (read-hegl-packet! in)))
+          (test-equal "close packet channel-id"
+            5 (hegl-packet-channel-id pkt))
+          (test-equal "close packet message-id"
+            %channel-close-id (hegl-packet-message-id pkt))
+          (test-equal "close packet payload is 0xFE"
+            (make-bytevector 1 #xFE) (hegl-packet-payload pkt)))))))
+
 (test-end "channel")
