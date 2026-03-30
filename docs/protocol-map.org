@@ -150,8 +150,8 @@ Our P2 bead (hegel-guile-m9u).
 
 Before any development session:
 
-1. ~git -C /home/dsp-dr/ghq/github.com/hegeldev/hegel-core pull~
-2. ~git -C /home/dsp-dr/ghq/github.com/hegeldev/hegel-rust pull~
+1. ~git -C $(ghq root)/github.com/hegeldev/hegel-core pull~
+2. ~git -C $(ghq root)/github.com/hegeldev/hegel-rust pull~
 3. Check ~grep PROTOCOL_VERSION hegel-core/src/hegel/protocol/connection.py~
 4. If protocol version changed → HALT, assess impact, update this document
 5. If only package version changed → review CHANGELOG, decide whether to bump pin
