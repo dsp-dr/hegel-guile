@@ -113,25 +113,25 @@ muxed channels separately (e.g., for server-driven test case lifecycle)."
 (define (spawn-server-stdio cmd)
   "Spawn hegel-core in --stdio mode via pipe+fork.
 Returns (values in-port out-port child-pid)."
-  (let-values (((child-read parent-write) (pipe))    ; parent writes → child reads (child stdin)
-               ((parent-read child-write) (pipe)))    ; child writes → parent reads (child stdout)
+  (let* ((stdin-pipe  (pipe))   ; parent writes → child reads (child stdin)
+         (stdout-pipe (pipe))   ; child writes → parent reads (child stdout)
+         (child-read   (car stdin-pipe))
+         (parent-write (cdr stdin-pipe))
+         (parent-read  (car stdout-pipe))
+         (child-write  (cdr stdout-pipe)))
     (let ((pid (primitive-fork)))
       (if (zero? pid)
           ;; Child: wire up stdin/stdout, exec hegel
           (begin
             (close-port parent-write)
             (close-port parent-read)
-            ;; Redirect child-read → stdin (fd 0)
             (dup2 (fileno child-read) 0)
             (close-port child-read)
-            ;; Redirect child-write → stdout (fd 1)
             (dup2 (fileno child-write) 1)
             (close-port child-write)
-            ;; Redirect stderr to /dev/null
             (let ((devnull (open-fdes "/dev/null" O_WRONLY)))
               (dup2 devnull 2)
               (close-fdes devnull))
-            ;; Exec: split cmd into program + args
             (let ((args (string-split
                          (string-append cmd " --stdio --verbosity quiet")
                          #\space)))
