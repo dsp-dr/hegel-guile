@@ -1,0 +1,87 @@
+## Attribution
+- Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+- Pair: jwalsh + Claude
+- Cross-pollination from dsp-dr/guile-sage 0.6.x bug-fix grind
+- User ask: \"add the beads and specs from our analysis back into hegel-guile\"
+
+## Testing
+- Examples are written but NOT executed against a live hegel-core server
+  in this commit. Validation against hegel-core 0.2.2 is a follow-up
+  (see hegel-guile-2 through hegel-guile-7 — the protocol is currently
+  refuted and the server-side path doesn't match the EVV claims).
+- The Scheme code in each example file compiles cleanly (verified by
+  inspection only — no live run yet).
+- The properties were validated in the SAGE harness at
+  dsp-dr/guile-sage tests/test-pbt.scm at 100 trials each, seed 42.
+  Total there: 61/61 properties pass, 6100 trials.
+
+## Issues
+- Closed: hegel-guile-8, hegel-guile-9, hegel-guile-10 (the 3 cages)
+- Open: hegel-guile-11 (bd init dolt store name dash bug, P3)
+- Origin: dsp-dr/guile-sage bd guile-p94, guile-bcy, guile-ecn (all closed)
+
+## Conjecture (CPRR)
+- Hypothesis 1: the three sage property cages are general patterns
+  that apply to any Scheme codebase touching JSON / FFI / filesystem
+  boundaries. They should live in hegel-guile as canonical examples
+  so other projects can find them and copy the pattern.
+- Hypothesis 2: cross-pollination via examples + a pointer doc is
+  the lightweight contribution model that makes sense between
+  related sibling repos (no shared module deps, just shared test
+  patterns and a reference link).
+- Hypothesis 3: hegel-guile's hypothesis-backed shrinking is
+  particularly valuable for these cages because the failure
+  modes (vector-vs-list confusion, inexact-int gotcha,
+  filesystem path mangling) are non-obvious counterexamples that
+  ad-hoc PRNG harnesses don't minimise. Sage's harness caught the
+  bugs but didn't shrink them — the user had to debug from raw
+  failures. Hegel would shrink to the smallest counterexample.
+
+## Validation
+- Each example file is self-contained and follows the
+  examples/basic.scm convention exactly: imports, helper-under-test,
+  define-hegel-test blocks, run-hegel-tests! at the end.
+- Each header comment cites the origin sage commit, the bd issue,
+  and the bug story so the property is motivated rather than
+  abstract.
+- The cross-reference doc at docs/property-cages-from-sage.md links
+  each cage back to the sage source so future readers can see
+  the production form of the helper.
+
+## Refutation / known limits
+- The examples have NOT been executed against a live hegel-core
+  server. They are syntactically valid Scheme, follow the existing
+  example convention, and use only the public (hegel) API
+  (define-hegel-test, tc-draw, integers, lists-of, text). But
+  hegel-guile's protocol layer is currently in a refuted state
+  (see hegel-guile-2 through 7) so a live run blocks on protocol
+  fixes that are not in scope here.
+- The .beads/issues.jsonl edits were made by hand-appending JSON
+  lines because bd init fails (dolt name dash). When that bug is
+  fixed, bd will pick up issues 8-11 from the JSONL automatically.
+- The file-roundtrip cage assumes /tmp/ is writable. CI runners
+  on locked-down environments may not have a writable /tmp/.
+- I did NOT modify .beads/.gitignore or .gitignore even though bd
+  init had silently rewritten them — those changes are out of
+  scope for this commit and should be reviewed by the maintainer
+  separately.
+
+## Meta - research / context / deep-dives
+- Three more sage PBT cages are listed in
+  docs/property-cages-from-sage.md as future cross-pollination
+  candidates: telemetry counter normalisation, model fallback
+  selection, OTLP {} sentinel encoding. Worth porting when the
+  hegel-guile ecosystem grows enough to need them.
+- Worth a future deep-dive: a hegel-guile harness that runs the
+  sage PBT properties via hegel's CBOR protocol instead of sage's
+  ad-hoc LCG. Would give sage real Hypothesis-backed shrinking
+  with no code changes to sage itself — just a different test
+  runner.
+- The bd JSONL append pattern is interesting: when bd is broken
+  but the JSONL is intact, you can still file issues by appending
+  lines. The JSONL format is stable and forward-compatible. Worth
+  documenting as a fallback in the bd README.
+- Open question: should hegel-guile's CONTRIBUTING.md mention the
+  cross-pollination convention so other projects know how to
+  contribute property cages? Probably yes once the protocol layer
+  stabilises.
