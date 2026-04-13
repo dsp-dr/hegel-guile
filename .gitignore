@@ -4,8 +4,12 @@
 *.tar.gz
 .cache/
 .venv/
+__pycache__/
 .hegel/
 tmp/
+
+# Test fixtures (generated images)
+tests/fixtures/test-*.png
 
 # Autotools generated
 /aclocal.m4

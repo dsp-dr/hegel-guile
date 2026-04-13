@@ -116,7 +116,10 @@ tests/
     test-server.scm        Server lifecycle mock tests
     test-test-case.scm     tc-draw/tc-assume mock tests (HEGL packets)
     test-test.scm          Server-driven event loop tests
-tools/
+scripts/
+    health-check.sh        Project scaffold integrity check
+    doc-check.sh           Documentation coverage lint
+    lint-contracts.sh      Module contract verification
     stdio-probe.scm        Live wire protocol probe (--stdio mode)
     hegl-probe.scm         Live probe (socket + optional socat proxy)
 examples/

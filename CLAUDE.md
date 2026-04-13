@@ -36,6 +36,10 @@ Before writing any code, output a summary of: (1) which build step you are worki
 The client is a thin protocol adapter. All intelligence (data generation, shrinking, test case selection) lives in `hegel-core`. Per-component implications:
 
 - **cbor.scm**: Encode/decode only. No schema validation, no CBOR extensions.
+- **crc32.scm**: Pure Scheme CRC32 checksum for HEGL packet integrity.
+- **packet.scm**: HEGL packet framing — magic bytes, CRC32 checksums, channel multiplexing.
+- **channel.scm**: Channel management for multiplexed test communication.
+- **mux.scm**: Demultiplexer routing framed packets to test channels.
 - **protocol.scm**: Message constructors produce alists. No retry logic, no buffering beyond what the port provides.
 - **server.scm**: Spawn subprocess, read socket path from stdout, connect, handshake. No health monitoring, no reconnection.
 - **test-case.scm**: `tc-draw` sends a draw request and returns the value. `tc-assume` sends assume and raises an exception. No caching, no local generation.
