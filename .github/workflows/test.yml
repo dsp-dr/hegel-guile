@@ -31,10 +31,13 @@ jobs:
           restore-keys: |
             guile-ccache-${{ runner.os }}-
 
-      - name: Set Guile binary names
+      - name: Detect Guile binary names
         run: |
-          echo "GUILE=guile-3.0" >> "$GITHUB_ENV"
-          echo "GUILD=guild-3.0" >> "$GITHUB_ENV"
+          GUILE_BIN=$(command -v guile-3.0 2>/dev/null || command -v guile3 2>/dev/null || command -v guile 2>/dev/null || echo guile)
+          GUILD_BIN=$(command -v guild-3.0 2>/dev/null || command -v guild3 2>/dev/null || command -v guild 2>/dev/null || echo guild)
+          echo "GUILE=$GUILE_BIN" >> "$GITHUB_ENV"
+          echo "GUILD=$GUILD_BIN" >> "$GITHUB_ENV"
+          echo "Detected: GUILE=$GUILE_BIN GUILD=$GUILD_BIN"
 
       - name: Compile
         run: make compile
@@ -74,10 +77,13 @@ jobs:
           pip install uv==0.6.14
           uv tool install hegel-core==0.2.3
 
-      - name: Set Guile binary names
+      - name: Detect Guile binary names
         run: |
-          echo "GUILE=guile-3.0" >> "$GITHUB_ENV"
-          echo "GUILD=guild-3.0" >> "$GITHUB_ENV"
+          GUILE_BIN=$(command -v guile-3.0 2>/dev/null || command -v guile3 2>/dev/null || command -v guile 2>/dev/null || echo guile)
+          GUILD_BIN=$(command -v guild-3.0 2>/dev/null || command -v guild3 2>/dev/null || command -v guild 2>/dev/null || echo guild)
+          echo "GUILE=$GUILE_BIN" >> "$GITHUB_ENV"
+          echo "GUILD=$GUILD_BIN" >> "$GITHUB_ENV"
+          echo "Detected: GUILE=$GUILE_BIN GUILD=$GUILD_BIN"
 
       - name: Run unit tests
         run: make test
@@ -85,4 +91,4 @@ jobs:
       - name: "E2E: basic.scm (aspirational — hangs at 200+ cases, see hegel-guile-15)"
         continue-on-error: true
         timeout-minutes: 2
-        run: guile-3.0 -L src examples/basic.scm
+        run: $GUILE -L src examples/basic.scm
