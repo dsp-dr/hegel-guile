@@ -28,7 +28,7 @@ uv tool install hegel-core
 gmake test
 
 # Run property tests against live server
-guile3 -L src examples/basic.scm
+guile -L src examples/basic.scm  # use guile3 on FreeBSD
 #+end_src
 
 ** Usage
@@ -51,7 +51,7 @@ guile3 -L src examples/basic.scm
 |----------------+------------------+------------------------------------------------------------------|
 | =integers=     | integer          | =#:min-value=, =#:max-value=                                     |
 | =booleans=     | boolean          | =#:p=                                                            |
-| =floats=       | float            | =#:min-value=, =#:max-value=, =#:allow-nan=, =#:allow-infinity=  |
+| =floats=       | float            | =#:min-value=, =#:max-value=, =#:allow-nan=, =#:allow-infinity=, =#:width=, =#:exclude-min=, =#:exclude-max= |
 | =text=         | string           | =#:min-size=, =#:max-size=                                       |
 | =binary=       | binary           | =#:min-size=, =#:max-size=                                       |
 | =null-values=  | null             | ---                                                              |
@@ -61,6 +61,7 @@ guile3 -L src examples/basic.scm
 | =const-value=  | (top-level key)  | single value                                                     |
 | =gen-filter=   | (client-side)    | predicate, uses =tc-assume= for rejection                       |
 | =gen-map=      | (client-side)    | transform function                                               |
+| =define-composite= | (macro)      | define named composite generator                                 |
 
 ** Architecture
 
@@ -88,6 +89,11 @@ guile3 -L src examples/basic.scm
 - [[file:examples/ledger.scm][examples/ledger.scm]] --- Double-entry bookkeeping invariants
 - [[file:examples/lisp.scm][examples/lisp.scm]] --- Minimal Lisp evaluator (eval/apply core, inspired by LISP 1.5 p.13)
 - [[file:examples/todo.scm][examples/todo.scm]] --- Todo list CRUD model-based testing
+- [[file:examples/compaction-contracts.scm][examples/compaction-contracts.scm]] --- Compaction contract properties via Hypothesis shrinking
+- [[file:examples/file-roundtrip.scm][examples/file-roundtrip.scm]] --- write_file path-honesty cage (ported from guile-sage)
+- [[file:examples/json-int-fuzz.scm][examples/json-int-fuzz.scm]] --- coerce->int input-shape fuzzing cage (ported from guile-sage)
+- [[file:examples/shape-coercion.scm][examples/shape-coercion.scm]] --- vector/list defensive coercion cage (ported from guile-sage)
+- [[file:examples/guile-specifics.scm][examples/guile-specifics.scm]] --- Guile-specific: bignums, numeric tower, tail calls, symbol interning
 
 ** Project Structure
 
@@ -107,12 +113,16 @@ src/
     test.scm               define-hegel-test macro, test runner
 tests/
     test-cbor.scm          CBOR codec round-trip tests
+    test-cbor-pbt.scm      CBOR boundary + property tests
     test-crc32.scm         CRC32 test vectors
+    test-crc32-pbt.scm     CRC32 property tests (incremental, uniqueness)
     test-packet.scm        HEGL packet framing tests
+    test-packet-pbt.scm    HEGL packet boundary + corruption detection tests
     test-mux.scm           Packet multiplexer tests
     test-channel.scm       Channel abstraction tests
     test-protocol.scm      Protocol message + conjecture validation
     test-generators.scm    Generator schema + C-015 type name tests
+    test-generators-pbt.scm Generator property tests (structure, CBOR round-trip)
     test-server.scm        Server lifecycle mock tests
     test-test-case.scm     tc-draw/tc-assume mock tests (HEGL packets)
     test-test.scm          Server-driven event loop tests
@@ -128,6 +138,11 @@ examples/
     ledger.scm             Double-entry bookkeeping
     lisp.scm               Minimal Lisp evaluator
     todo.scm               CRUD model-based testing
+    compaction-contracts.scm Compaction contract properties
+    file-roundtrip.scm     write_file path-honesty cage
+    json-int-fuzz.scm      coerce->int input-shape fuzzing
+    shape-coercion.scm     vector/list coercion cage
+    guile-specifics.scm    Guile-specific property showcase
 #+end_example
 
 ** Conjectures
@@ -141,9 +156,11 @@ See [[file:conjectures.org][conjectures.org]] for the full research and adversar
 | C3  | WASI lacks Unix sockets           | CONFIRMED          |
 | C4  | stdio transport viable            | CONFIRMED (0.2.3)  |
 | C7  | CBOR framing is uint32-BE         | REFUTED (HEGL)     |
-| C8  | Handshake is client-initiates     | CONFIRMED          |
+| C8  | Handshake is client-initiated     | CONFIRMED          |
 | C9  | HEGL impl matches wire format     | CONFIRMED          |
 | C10 | Reply payload is ={result: v}=    | CONFIRMED          |
+| C11 | Packet mux for interleaved traffic | CONFIRMED         |
+| C12 | run_test channel_id at top level  | CONFIRMED          |
 | C13 | Status strings UPPERCASE          | CONFIRMED          |
 | C14 | Server drives test case lifecycle | IMPLEMENTED        |
 | C15 | Schema type vocabulary            | CONFIRMED          |

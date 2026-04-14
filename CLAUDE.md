@@ -13,7 +13,7 @@ Before writing any code, output a summary of: (1) which build step you are worki
 ## What You Are Building
 
 - A Guile 3 client for the [Hegel](https://hegel.dev) universal property-based testing protocol
-- Communicates with `hegel-core` (Python/Hypothesis) over Unix sockets using length-prefixed CBOR frames
+- Communicates with `hegel-core` (Python/Hypothesis) over stdio or Unix sockets using HEGL packet framing
 - Exposes a macro-based API (`define-hegel-test`, `tc-draw`, `tc-assume`) that feels native to Guile
 
 ## Explicit Anti-Goals
@@ -26,7 +26,7 @@ Before writing any code, output a summary of: (1) which build step you are worki
 ## Key Design Decisions
 
 - Alists as the universal map representation (not hash tables) — idiomatic Guile, easy to inspect in REPL
-- Length-prefixed CBOR frames (uint32-BE header + payload) for message boundaries
+- HEGL packet framing (magic + CRC32 + channel-id + message-id + payload + terminator) for message boundaries
 - Client-side `gen-filter` and `gen-map` wrappers — server doesn't know about them, they use `tc-assume` for rejection
 - `define-hegel-test` macro registers tests; `run-hegel-tests!` executes them all against a single server connection
 - Server discovery: `HEGEL_SERVER_COMMAND` env var > `uv tool run hegel` > PATH lookup
@@ -41,24 +41,25 @@ The client is a thin protocol adapter. All intelligence (data generation, shrink
 - **channel.scm**: Channel management for multiplexed test communication.
 - **mux.scm**: Demultiplexer routing framed packets to test channels.
 - **protocol.scm**: Message constructors produce alists. No retry logic, no buffering beyond what the port provides.
-- **server.scm**: Spawn subprocess, read socket path from stdout, connect, handshake. No health monitoring, no reconnection.
+- **server.scm**: Spawn subprocess (stdio: pipe, socket: read socket path from stdout), connect, handshake. No health monitoring, no reconnection.
 - **test-case.scm**: `tc-draw` sends a draw request and returns the value. `tc-assume` sends assume and raises an exception. No caching, no local generation.
 - **test.scm**: Loop over test cases, catch exceptions, report status. The server decides when to stop.
 
 ## Protocol Message Types
 
-| Direction | Message | Key Fields |
-|-----------|---------|------------|
-| C→S | handshake | client, version |
-| S→C | handshake | server_version |
-| C→S | start_test | settings.test_cases |
-| S→C | ok | — |
-| C→S | start_test_case | — |
-| C→S | draw | schema |
-| S→C | value | value |
-| C→S | assume | — |
-| C→S | finish_test_case | status: passed/failed/invalid |
-| C→S | finish_test | status: passed/failed |
+| Direction | Channel | Message | Key Fields |
+|-----------|---------|---------|------------|
+| C→S | control | handshake (raw) | "hegel_handshake_start" (21 bytes) |
+| S→C | control | handshake (raw) | "Hegel/0.7" |
+| C→S | control | run_test | command, channel_id, test_cases |
+| S→C | control | ok | result: true |
+| S→C | test | test_case (event) | event, channel_id |
+| C→S | test | ack | result: null |
+| C→S | test-case | generate | command, schema |
+| S→C | test-case | value | result: value |
+| C→S | test-case | assume | command |
+| C→S | test-case | mark_complete | command, status: VALID/INVALID/INTERESTING |
+| S→C | test | test_done (event) | event, results |
 
 ## CBOR Type Coverage
 
@@ -74,7 +75,7 @@ The client is a thin protocol adapter. All intelligence (data generation, shrink
 
 ## Build Order
 
-1. **CBOR codec** (`src/hegel/cbor.scm`) — Acceptance: `guile3 -L src tests/test-cbor.scm` passes all SRFI-64 tests
+1. **CBOR codec** (`src/hegel/cbor.scm`) — Acceptance: `make test` passes test-cbor.scm (all SRFI-64 tests)
 2. **Protocol client** (`src/hegel/protocol.scm`) — Acceptance: message constructors produce correct alists, response accessors extract fields
 3. **Server manager** (`src/hegel/server.scm`) — Acceptance: `make-hegel-connection` spawns hegel-core, connects, completes handshake
 4. **Test case** (`src/hegel/test-case.scm`) — Acceptance: `tc-draw` returns server-generated values, `tc-assume` raises on #f
@@ -85,20 +86,29 @@ The client is a thin protocol adapter. All intelligence (data generation, shrink
 
 If an acceptance test fails, stop. Document what failed, what you tried, and what the blocker is. Do not proceed to the next step. Surface the failure as a CPRR refutation candidate.
 
-## Open Conjectures
+## Conjectures
 
-- **C-001**: CBOR framing is length-prefixed uint32-BE. Falsification: capture hegel-rust ↔ hegel-core traffic with socat and inspect headers.
-- **C-002**: Handshake is client-initiated. Falsification: server might send first (like HTTP/2 preface).
-- **C-003**: Schema keys use snake_case. Status: confirmed by blog post example `{"type": "integers", "min_value": 100}`.
-- **C-004**: `finish_test_case` status strings are "passed"/"failed"/"invalid". Falsification: server might use numeric codes.
+See [conjectures.org](conjectures.org) (C1–C9) and [conjectures-c10-c15.org](conjectures-c10-c15.org) (C10–C15) for full CPRR research. Tests reference conjectures as `C-0XX` (e.g., `C-003` in test-generators.scm). Note: C3 in conjectures.org is "WASI lacks Unix sockets"; the snake_case conjecture is tested as C-003 but was never assigned a top-level research ID.
+
+| ID | Conjecture | Status | Test Coverage |
+|----|-----------|--------|---------------|
+| C7 | CBOR framing is uint32-BE | **REFUTED** — HEGL packets | packet.scm, test-packet.scm |
+| C8 | Handshake is client-initiated | **CONFIRMED** | test-protocol.scm |
+| C10 | Reply payload is `{result: v}` | **CONFIRMED** | test-channel.scm (C-010) |
+| C11 | Packet mux for interleaved traffic | **CONFIRMED** | test-mux.scm (C-011) |
+| C12 | run_test requires channel_id at top level | **CONFIRMED** | test-protocol.scm |
+| C13 | Status strings UPPERCASE | **CONFIRMED** | test-protocol.scm (C-013) |
+| C14 | Server drives test case lifecycle | **IMPLEMENTED** | test-test.scm (C-014) |
+| C15 | Schema type vocabulary | **CONFIRMED** | test-generators.scm (C-015) |
+| — | Schema keys use snake_case | **CONFIRMED** | test-generators.scm (C-003) |
 
 ## Instrumentation Requirement
 
-Every conjecture must have a measurement hook. When implementing code that depends on a conjecture, add a check or assertion that would surface a violation. For example, if C-001 is wrong about framing, `cbor-decode-from-port` should produce a clear error, not corrupt data.
+Every conjecture must have a measurement hook. When implementing code that depends on a conjecture, add a check or assertion that would surface a violation. For example, `read-hegl-packet!` validates magic bytes and CRC32 — a framing violation produces a clear error, not corrupt data.
 
 ## Stack Preferences
 
-- **Runtime**: guile3 (GNU Guile 3.x) — not guile, not guile2
+- **Runtime**: GNU Guile 3.x (`guile3` on FreeBSD, `guile` on macOS/Linux — Makefile auto-detects)
 - **Testing**: SRFI-64 for unit tests, Hegel for property tests
 - **Build**: GNU Make
 - **Module style**: `define-module` with `#:use-module` and `#:export`
@@ -106,8 +116,8 @@ Every conjecture must have a measurement hook. When implementing code that depen
 
 ## Acceptance: End-to-End Test
 
-Run `guile3 -L src examples/basic.scm` with `hegel-core` installed. Expected:
-1. Server spawns and prints socket path
+Run `make repl` then `(load "examples/basic.scm")`, or directly `guile -L src examples/basic.scm` (use `guile3` on FreeBSD). Requires `hegel-core` installed. Expected:
+1. Server spawns (stdio mode: via pipe; socket mode: prints socket path)
 2. Client connects and completes handshake
 3. All 4 tests (commutative addition, number round-trip, title case idempotence, alist model) run with 0 failures
 4. Exit code 0
