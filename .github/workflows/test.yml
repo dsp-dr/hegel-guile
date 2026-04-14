@@ -21,7 +21,7 @@ jobs:
       - name: Install Guile 3.0
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q guile-3.0
+          sudo apt-get install -y -q guile-3.0 guile-3.0-dev
 
       - name: Cache Guile compilation
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -57,7 +57,7 @@ jobs:
       - name: Install Guile 3.0
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q guile-3.0
+          sudo apt-get install -y -q guile-3.0 guile-3.0-dev
 
       - name: Cache Guile compilation
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
