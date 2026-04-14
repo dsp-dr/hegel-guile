@@ -67,10 +67,10 @@
    Relevance to Seven Concerns stack: L3–L5 (resilience, contract testing).
    BugBash 2026 (Apr 22–24, DC) likely to have concrete announcements.
 
-* Phase 0 — Protocol Verification (NOW → Apr 4)
+* Phase 0 — Protocol Verification (COMPLETE)
   :PROPERTIES:
   :TRACK: protocol
-  :DEADLINE: <2026-04-04>
+  :CLOSED: <2026-03-26>
   :END:
 
 ** ACTIVE [C2] Verify hegel-core deps on CPython WASI
@@ -95,26 +95,16 @@
    *Fail path:* ~cbor2~ C extension import fails without pure fallback.
    Mitigation: patch cbor2 or vendor pure-Python version.
 
-** TODO [C4] Test --transport stdio on native Python
+** DONE [C4] Test --transport stdio on native Python
    :PROPERTIES:
    :CONJECTURE: C4
    :SPEC: spec.org::*C4
    :BLOCKS: Phase 2 stdio PR
    :END:
 
-   Before touching WASM: validate the transport change works natively.
-
-   #+begin_src sh
-   # Apply local patch to hegel-core
-   cd /tmp/hegel-core-fork
-   python -m hegel --transport stdio &
-   SERVER_PID=$!
-
-   # Run one round of protocol via nc or socat on stdio
-   # (manual CBOR frame inspection)
-
-   kill $SERVER_PID
-   #+end_src
+   CONFIRMED: hegel-core 0.2.3 ships =--stdio= flag. server.scm supports
+   both stdio (default) and socket transports via =HEGEL_TRANSPORT= env var.
+   Verified against live hegel-core via stdio-probe.scm.
 
 ** TODO [C5] SQLite on WASI filesystem
    :PROPERTIES:
@@ -134,44 +124,29 @@
    "
    #+end_src
 
-** TODO Confirm protocol framing against live hegel-rust
+** DONE Confirm protocol framing against live hegel-core
    :PROPERTIES:
-   :CONJECTURE: C1-refined
-   :NOTE: C1 (Pyodide) refuted; this verifies the CBOR framing assumption
+   :CONJECTURE: C7-REFUTED, C8-CONFIRMED, C9-CONFIRMED
    :END:
-   Use ~socat~ to capture hegel-rust ↔ hegel-core traffic and verify:
-   - Length prefix: uint32-BE (assumed)
-   - Handshake: client sends first (assumed)
-   - ~finish_test_case~: ~"passed"~ / ~"failed"~ / ~"invalid"~ strings
+   C7 REFUTED: wire format is HEGL packets (magic =0x4845474C= + CRC32 +
+   channel + msg-id + payload + =0x0A= terminator), not uint32-BE CBOR.
+   C8 CONFIRMED: client sends raw =hegel_handshake_start=, server replies =Hegel/0.7=.
+   C9 CONFIRMED: full implementation in packet.scm, crc32.scm, channel.scm, mux.scm.
+   Verified via stdio-probe.scm and hegl-probe.scm against hegel-core 0.2.3.
 
-   #+begin_src sh
-   # Intercept: proxy unix socket and hex-dump frames
-   socat -v UNIX-LISTEN:/tmp/hegel-probe.sock,fork \
-     UNIX:/tmp/hegel-actual.sock 2>&1 | xxd | head -80
-   # Then run cargo test with HEGEL_SOCKET=/tmp/hegel-probe.sock
-   #+end_src
-
-* Phase 1 — Live Integration (Apr 4–18)
+* Phase 1 — Live Integration (mostly DONE, 1 open)
   :PROPERTIES:
   :TRACK: hegel-guile
   :DEADLINE: <2026-04-18>
   :END:
 
-** TODO Wire hegel-guile against live hegel-core
-   Run ~examples/basic.scm~ against real server, not unit tests only.
+** DONE Wire hegel-guile against live hegel-core
+   Tested ~examples/basic.scm~ against hegel-core 0.2.3 via stdio.
+   Works at 10 test cases; hangs at 200+ (see bead hegel-guile-15).
 
-   #+begin_src sh
-   pip install hegel-core  # or: uv tool install hegel-core
-   guile -L src examples/basic.scm
-   #+end_src
-
-   *Expected failures to fix first:*
-   - Socket path handshake in ~server.scm~ (depends on C4 outcome)
-   - Any ~msg-finish-test-case~ string mismatch (depends on framing check)
-
-** TODO Fix open conjectures surfaced by live run
-   Patch ~src/hegel/server.scm~, ~src/hegel/protocol.scm~ as needed.
-   Update org source blocks and re-tangle.
+** DONE Fix open conjectures surfaced by live run
+   C7–C15 all resolved. Protocol rewritten: HEGL framing, UPPERCASE status,
+   server-driven lifecycle, packet multiplexer. See conjectures-c10-c15.org.
 
 ** TODO Integration test suite
    Add ~tests/test-integration.scm~: runs end-to-end with real hegel-core.
@@ -308,13 +283,20 @@
 
 * CPRR Status Log
 
-| ID | Conjecture | Status | Owner | Date |
-|----|-----------|--------|-------|------|
-| C1 | Pyodide runs in Wasmtime | ❌ REFUTED | spec.org | 2026-03-24 |
-| C2 | hegel-core deps on CPython WASI | 🔲 OPEN | Phase 0 | — |
-| C3 | WASI lacks Unix sockets | ✅ CONFIRMED-BLOCKING | spec.org | 2026-03-24 |
-| C4 | stdio transport viable | 🔲 OPEN | Phase 0 | — |
-| C5 | Hypothesis DB on WASI FS | 🔲 OPEN | Phase 0 | — |
-| C6 | Guile drives python.wasm (Strategy α) | 🔲 OPEN | Phase 2 | — |
-| C7 | CBOR framing is uint32-BE | 🔲 OPEN | Phase 1 | — |
-| C8 | Handshake is client-initiates | 🔲 OPEN | Phase 1 | — |
+| ID  | Conjecture                               | Status              | Owner    | Date       |
+|-----+------------------------------------------+---------------------+----------+------------|
+| C1  | Pyodide runs in Wasmtime                 | ❌ REFUTED           | spec.org | 2026-03-24 |
+| C2  | hegel-core deps on CPython WASI          | 🔲 OPEN              | Phase 0  | —          |
+| C3  | WASI lacks Unix sockets                  | ✅ CONFIRMED-BLOCKING | spec.org | 2026-03-24 |
+| C4  | stdio transport viable                   | ✅ CONFIRMED          | Phase 0  | 2026-03-26 |
+| C5  | Hypothesis DB on WASI FS                 | 🔲 OPEN              | Phase 0  | —          |
+| C6  | Guile drives python.wasm (Strategy α)    | 🔲 OPEN              | Phase 2  | —          |
+| C7  | CBOR framing is uint32-BE                | ❌ REFUTED (HEGL)    | Phase 1  | 2026-03-26 |
+| C8  | Handshake is client-initiated            | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C9  | HEGL impl matches wire format            | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C10 | Reply payload is ={result: v}=           | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C11 | Packet mux for interleaved traffic       | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C12 | run_test channel_id at top level         | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C13 | Status strings UPPERCASE                 | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |
+| C14 | Server drives test case lifecycle        | ✅ IMPLEMENTED        | Phase 1  | 2026-03-26 |
+| C15 | Schema type vocabulary                   | ✅ CONFIRMED          | Phase 1  | 2026-03-26 |

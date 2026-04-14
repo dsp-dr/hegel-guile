@@ -41,10 +41,9 @@ bd create "title" --description="desc" -t feature -p 1
 ## Build & Test
 
 ```bash
-guile3 -L src tests/test-cbor.scm    # unit tests
-guile3 -L src examples/basic.scm     # end-to-end (needs hegel-core)
-make test                             # compile + unit tests
-make compile                          # compile all modules
+make test                             # compile + all 14 unit test suites
+make compile                          # compile all 11 modules
+guile -L src examples/basic.scm      # end-to-end (needs hegel-core)
 ```
 
 ## Landing the Plane (Session Completion)
