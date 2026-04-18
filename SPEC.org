@@ -1,0 +1,111 @@
+#+TITLE: hegel-guile Specification
+#+AUTHOR: dsp-dr
+#+DATE: 2026-04-18
+
+* Purpose
+
+GNU Guile 3 client for the Hegel universal property-based testing protocol (v0.7).
+
+Hegel separates the test engine (Hypothesis, running as =hegel-core= in Python)
+from the language client. This library implements the HEGL wire protocol so Guile
+programs can define property-based tests while Hypothesis handles generation,
+shrinking, and counterexample search.
+
+* Goals
+
+- Implement the HEGL binary wire protocol (packet framing, CBOR, CRC32, mux)
+- Provide idiomatic Guile API: =define-hegel-test=, =tc-draw=, =tc-assume=
+- Support stdio and Unix socket transports to =hegel-core=
+- Expose generator combinators matching hegel-core's schema vocabulary
+- Run on GNU Guile 3.x across macOS, Linux, and FreeBSD
+
+* Non-Goals
+
+- Reimplementing Hypothesis (generation/shrinking stays in hegel-core)
+- GUI or web interface
+- Supporting Guile 2.x
+
+* Architecture
+
+#+begin_example
+  Guile Process                    hegel-core (Python)
+  +--------------------------+     +------------------+
+  | test.scm     (runner)    |     | Hypothesis engine|
+  |   |                      |     |   |              |
+  | test-case.scm (tc-draw)  |     | Protocol server  |
+  |   |                      |     +--------+---------+
+  | channel.scm (multiplex)  |              |
+  |   |                      |              |
+  | mux.scm   (demux/buffer) |              |
+  |   |                      |              |
+  | packet.scm (HEGL framing)+-------------+
+  |   |                      |  stdio / Unix socket
+  | crc32.scm  cbor.scm      |  HEGL binary packets
+  +--------------------------+
+#+end_example
+
+** Module Inventory
+
+| Module          | Role                                              |
+|-----------------+---------------------------------------------------|
+| =hegel.scm=       | Top-level re-export (public API surface)           |
+| =hegel/cbor.scm=  | CBOR encoder/decoder (RFC 8949 subset)             |
+| =hegel/crc32.scm= | CRC32 checksum (pure Scheme, no FFI)               |
+| =hegel/packet.scm=| HEGL packet framing (magic bytes, CRC32, channels) |
+| =hegel/mux.scm=   | Packet demultiplexer (per-channel buffering)        |
+| =hegel/channel.scm=| Multiplexed channel abstraction (direct + muxed)  |
+| =hegel/protocol.scm=| Wire protocol message constructors                |
+| =hegel/generators.scm=| Schema combinators (integers, text, lists-of, ...) |
+| =hegel/server.scm=| Server lifecycle (spawn, connect, handshake, transport) |
+| =hegel/test-case.scm=| tc-draw / tc-assume primitives                  |
+| =hegel/test.scm= | =define-hegel-test= macro and event-loop runner    |
+
+** Protocol Flow
+
+1. Client spawns =hegel-core= (stdio or socket transport)
+2. Client sends handshake on control channel (channel 0)
+3. Client sends =run_test= request; server acks
+4. Server sends =test_case= events with channel IDs
+5. Client draws values via =tc-draw= (generate command on test channel)
+6. Client runs test body, sends =mark_complete= with pass/fail/assume
+7. Server sends =test_done= with results when search concludes
+
+* Key Design Decisions
+
+- *CPRR-driven*: Protocol implementation guided by Conjecture-Predict-Refute-Revise.
+  15 conjectures tracked in =conjectures.org=, most confirmed against hegel-core wire traces.
+- *No FFI*: CRC32 and CBOR are pure Scheme. Keeps the dependency footprint to zero
+  native libraries.
+- *Tail-recursive event loop*: The test runner uses recursion as the state machine;
+  no explicit FSM data structure.
+- *Transport-agnostic layering*: stdio and socket transports share identical
+  packet/mux/channel layers; only =server.scm= knows the difference.
+- *Version tracking*: hegel-guile version (0.7.x) mirrors hegel-core protocol version.
+  Patch bumps are client-only fixes; minor bumps follow protocol changes.
+
+* Current Status (v0.7.1)
+
+- 10 source modules, 14 unit test suites (all green without hegel-core)
+- 10 examples including SICP-inspired tests, ledger invariants, and model-based CRUD
+- Stdio transport implemented (default); socket transport available
+- Property-based test suites for CBOR, CRC32, packet framing, and generators
+- Conjecture log: 11 of 15 conjectures confirmed or implemented; 2 refuted
+
+* Known Limitations
+
+- Requires =hegel-core= Python package for end-to-end property testing
+- Streaming/async generator draw not yet supported
+- No prompt caching or connection pooling for repeated test runs
+- FreeBSD requires =guile3= binary name (auto-detected by Makefile)
+
+* Dependencies
+
+| Dependency    | Version  | Purpose                       |
+|---------------+----------+-------------------------------|
+| GNU Guile     | 3.x      | Runtime                       |
+| Python        | 3.11+    | hegel-core test server        |
+| hegel-core    | 0.2.3+   | Hypothesis engine (pip/uv)    |
+
+* License
+
+Apache-2.0
